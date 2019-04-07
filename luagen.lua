@@ -136,7 +136,7 @@ function gen_game(v)
 end
 
 local games = {
-	"mars", "snowstorm", "summerday", "deadhand",
+	"mars", "snowstorm", "summerday", "deadhand", "awake", "london",
 }
 local g = {}
 for _, v in ipairs(games) do
