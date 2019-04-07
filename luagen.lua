@@ -49,7 +49,9 @@ local donate=[[
 <iframe src="https://money.yandex.ru/quickpay/shop-widget?writer=buyer&targets=&targets-hint=%D0%9D%D0%B0%20%D0%BF%D1%80%D0%BE%D0%B5%D0%BA%D1%82&default-sum=50&button-text=11&payment-type-choice=on&mobile-payment-type-choice=on&hint=&successURL=&quickpay=shop&account=41001612955830" width="450" height="224" frameborder="0" allowtransparency="true" scrolling="no"></iframe>
 </div>
 ]]
-
+local counter=[[
+<!-- Yandex.Metrika counter --> <script type="text/javascript" > (function(m,e,t,r,i,k,a){m[i]=m[i]||function(){(m[i].a=m[i].a||[]).push(arguments)}; m[i].l=1*new Date();k=e.createElement(t),a=e.getElementsByTagName(t)[0],k.async=1,k.src=r,a.parentNode.insertBefore(k,a)}) (window, document, "script", "https://mc.yandex.ru/metrika/tag.js", "ym"); ym(53163859, "init", { clickmap:true, trackLinks:true, accurateTrackBounce:true }); </script> <noscript><div><img src="https://mc.yandex.ru/watch/53163859" style="position:absolute; left:-9999px;" alt="" /></div></noscript> <!-- /Yandex.Metrika counter -->
+]]
 local disquss =[[
 <div id="disqus_thread"></div>
 <script>
@@ -73,7 +75,7 @@ s.setAttribute('data-timestamp', +new Date());
 <noscript>Please enable JavaScript to view the <a href="https://disqus.com/?ref_noscript">comments powered by Disqus.</a></noscript>
 ]]
 
-local footer=feedback..donate..disquss..[[
+local footer=feedback..donate..disquss..counter..[[
 </div> <!-- container -->
 </body>
 </html>
