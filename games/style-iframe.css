@@ -1,0 +1,16 @@
+.container {
+	height: 600px;
+	overflow-y: scroll;
+}
+
+.TextGrid {
+	margin: auto;
+	position: fixed;
+	z-index: 2;
+}
+
+.TextGrid a {
+	text-decoration: none;
+	background-color: black;
+	color: white;
+}
