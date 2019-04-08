@@ -11,4 +11,6 @@
 	text-decoration: none;
 	background-color: black;
 	color: white;
+	border-radius: 0.2em;
+	padding: 0.2em;
 }
