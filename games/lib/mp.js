@@ -103,6 +103,8 @@ function Input(container)
     self.submitLine = function()
     {
 	var command = this.input.val();
+	command = command.replace(/&/g, " ").replace(/</g, " ").replace(/>/g, " ");
+
 	this.lastinput.appendTo(this.input.parent());
 	if (command != this.history[0] && /\S/.test(command)) {
 	    this.history.unshift(command);
@@ -126,7 +128,6 @@ function Input(container)
 	} else if (parser_clear() == 1) {
 	    this.container.empty();
 	} else {
-	    command = command.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 	    ret = '<b>' + command.trim() + '</b>' + '\n' + ret;
 	}
 	ret = parseOutput(ret);
