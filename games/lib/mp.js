@@ -126,6 +126,7 @@ function Input(container)
 	} else if (parser_clear() == 1) {
 	    this.container.empty();
 	} else {
+	    command = command.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 	    ret = '<b>' + command.trim() + '</b>' + '\n' + ret;
 	}
 	ret = parseOutput(ret);
