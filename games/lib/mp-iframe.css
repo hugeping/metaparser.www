@@ -2,7 +2,7 @@
 	width: 100%;
 	text-align: right;
 	position: fixed;
-	margin: 0 -1em;
+	margin: -1em -1em 0 0;
 	z-index: 2;
 	background-color: rgba(255, 255, 255, 0.0);
 }
@@ -13,7 +13,7 @@
 	color: white;
 	border-radius: 0.2em;
 	padding: 0.2em;
-	margin-top: -1em;
+	margin: 0 0.5em 0 0;
 }
 
 #metaparser
