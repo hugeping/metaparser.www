@@ -162,7 +162,7 @@ function gen()
 		print([[<div class="thumbnail">]])
 
 		print([[<p class="text-center">]]);
-		print(string.format([[<a href=%q><img class="img-rounded" src=%q" alt="" width="128px"></a>]],
+		print(string.format([[<a href=%q><img class="img-rounded" src=%q alt="" width="128px"></a>]],
 			"games/"..v.dir.."/index.html", 'games/'..v.dir .. '/'..v.pic));
 		print([[</p>]]);
 		print([[<div class="caption">]])
