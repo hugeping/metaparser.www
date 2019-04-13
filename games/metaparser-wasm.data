@@ -6190,6 +6190,9 @@ function mrd:word(w, ob)
 			if not ww then
 				ww, gg = self:dict(game.__dict, t..'/'..hints)
 			end
+			if not ww then
+				ww, gg = self:dict(self.__dict, t..'/'..hints)
+			end
 			noun = gg and gg[lang.gram_t.noun]
 			if not ww then
 				ww, gg = self:lookup(t, g)
@@ -6469,6 +6472,9 @@ end
 
 function mrd:init(l)
 	self.lang = l
+	if type(l.dict) == 'table' then
+		std.obj.dict(self, l.dict)
+	end
 	if self:gramtab(curdir .. "rgramtab.tab") == false then
 		msg("Error while opening gramtab.")
 		return
@@ -6549,7 +6555,7 @@ std.obj.gram = function(self, ...)
 end
 
 std.obj.dict = function(self, t)
-	local idx = {}
+	local idx = std.rawget(self, '__dict') or {}
 	for word, v in pairs(t) do
 		local w, hints = str_hint(word)
 		if type(v) == 'table' then
@@ -6971,7 +6977,25 @@ lang = { yo = false,
 		first = '1л',
 		second = '2л',
 		third = '3л',
-	}
+	};
+	dict = {
+		["ведро/ср,но,С"] = {
+			"ведро/им", "вёдра/им,мн",
+			"ведро/вн", "вёдра/вн,мн",
+			"ведро/рд", "вёдра/рд,мн",
+			"ведру/дт", "ведрам/дт,мн",
+			"ведром/тв", "вёдрами/тв,мн",
+			"ведре/пр", "вёдрах/пр,мн",
+		},
+		["деревья/жр,но,мн,С"] = {
+			"деревья/им";
+			"деревья/вн";
+			"деревьев/рд";
+			"деревьями/тв";
+			"деревьях/пр";
+			"деревьям/дт";
+		};
+	};
 }
 
 return lang
@@ -7225,6 +7249,7 @@ mp.msg.Enter.DOOR_CLOSED = "{#First} {#word/закрыт,#first}."
 
 mp.msg.Walk.ALREADY = mp.msg.Enter.ALREADY
 mp.msg.Walk.WALK = "Но {#first} и так находится здесь."
+mp.msg.Walk.NOWHERE = "Куда именно?"
 mp.msg.Walk.INV = "Но {#first} у {#me/рд} с собой."
 
 mp.msg.Enter.EXITBEFORE = "Сначала нужно {#if_has/#where,supporter,слезть с {#where/рд}.,покинуть {#where/вн}.}"
@@ -7646,7 +7671,7 @@ Verb { "#Exam",
 }
 
 Verb { "#Search",
-	"искать,обыскать,ищ/и,обыщ/и,изуч/ать,исслед/овать",
+	"[|по]искать,обыскать,[|по]ищ/и,обыщ/и,[|по]изуч/ать,[|по]исслед/овать",
 	"{noun}/вн : Search",
 	"в|во|на {noun}/пр,2 : Search",
 	"под {noun}/тв : LookUnder",
@@ -7867,7 +7892,7 @@ Verb {
 
 Verb {
 	"#Cut",
-	"[ |раз|на|по|от]рез/ать,[ |раз|на|по|от]реж/ь",
+	"[ |раз|на|по|от|пере]рез/ать,[ |раз|на|по|от|пере]реж/ь",
 	"{noun}/вн : Cut",
 	"{noun}/вн {noun}/тв,held: Cut",
 	"~ {noun}/тв,held {noun}/вн: Cut reverse"
@@ -10098,7 +10123,8 @@ function mp:parse(inp)
 			s:reaction(std.pget())
 			r = s:display(false)
 			s:lastdisp(r)
-			return r, false
+			std.abort_cmd = true
+			return r
 		end
 	else
 		if std.cmd[1] ~= 'look' and not noprompt then
@@ -11997,7 +12023,11 @@ function mp:Walk(w)
 end
 
 function mp:after_Walk(w)
-	p (mp.msg.Walk.WALK)
+	if not w then
+		p (mp.msg.Walk.NOWHERE)
+	else
+		p (mp.msg.Walk.WALK)
+	end
 end
 
 mp.msg.Exit = {}
@@ -12386,7 +12416,8 @@ function mp:TakeAll(wh)
 	mp:objects(wh, oo)
 	local taken = {}
 	for _, o in ipairs(oo) do
-		if not o:has 'static' and not o:has'scenery' and not mp:animate(o)
+		if o:hasnt 'static' and o:hasnt'scenery' and o:hasnt 'concealed'
+			and not mp:animate(o)
 			and not cont_taken(o, taken) then
 			empty = false
 			mp:message('TAKING_ALL', o)
@@ -12481,11 +12512,13 @@ function mp:DropAll(wh)
 	local oo = {}
 	mp:objects(std.me(), oo, false)
 	for _, o in ipairs(oo) do
-		empty = false
-		mp.msg.DROPPING_ALL(o)
-		mp:subaction('Drop', o)
-		if have(o) then
-			break
+		if o:hasnt 'concealed' then
+			empty = false
+			mp.msg.DROPPING_ALL(o)
+			mp:subaction('Drop', o)
+			if have(o) then
+				break
+			end
 		end
 	end
 	if empty then
