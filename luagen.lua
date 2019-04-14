@@ -82,7 +82,7 @@ local footer=feedback..donate..disquss..counter..[[
 ]]
 
 function gen_game(v)
-	local text = string.format([[<html><head>
+	local text = string.format([[<html lang="ru"><head>
 	<meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
   <title>Текстовая игра «%s»</title>
   <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
