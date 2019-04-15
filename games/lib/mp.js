@@ -168,7 +168,7 @@ function Input(output)
 	    console.log("Restart game\n.");
 	    parser_stop();
 	    parser_start(Game);
-	    rmAutosave();
+//	    rmAutosave();
 	    ret = parser_cmd("look");
 	    this.output.empty();
 	} else if (parser_load() == 1) {
@@ -256,9 +256,9 @@ function Start(fname)
     }
     document.title = gameName();
     var text = parser_cmd("look");
-    if (isAutosave()) {
-	text = text + "\n<i>Есть сохранённая игра.</i>"
-    }
+//  if (isAutosave()) {
+//	text = text + "\n<i>Есть сохранённая игра.</i>"
+//  }
     text = parseOutput(text).trim();
     span.append(text + '\n\n')
     span.appendTo(input.output)
