@@ -14,7 +14,7 @@ iface.bold = html_tag('b')
 iface.em = html_tag('i')
 iface.img = function(s, str)
 	if str then
-		instead.clear() -- always clear window on pictures
+--		instead.clear() -- always clear window on pictures
 		return '<g:'..str..'>'
 	end
 end
@@ -9824,7 +9824,7 @@ mp = std.obj {
 	daemons = std.list {};
 	{
 		version = "1.5";
-		cache = { tokens = {} };
+		cache = { tokens = {}, nouns = false };
 		scope = std.list {};
 		logfile = false;
 		lognum = 0;
@@ -10093,11 +10093,12 @@ end)
 -- @param wh where to start scope
 -- @param oo table
 -- @param recurs recursive flag
-function mp:objects(wh, oo, recurs)
-	local scope = self.scope
+-- @param scope scope list (optional)
+
+function mp:objects(wh, oo, recurs, scope)
 	wh:for_each(function(v)
 		if v:disabled() then return nil, false end
-		if scope:lookup(v) or v:visible() then
+		if v:visible() or (scope and scope:lookup(v)) then
 			table.insert(oo, v)
 			if v.scope then
 				if std.is_obj(v.scope, 'list') then
@@ -10108,10 +10109,13 @@ function mp:objects(wh, oo, recurs)
 			end
 		end
 		if recurs == false or v:closed() then
+			if std.is_obj(wh, 'list') then
+				return -- just skip
+			end
 			return nil, false
 		end
 		if std.is_obj(wh, 'list') then
-			self:objects(v, oo, recurs)
+			self:objects(v, oo, recurs, scope)
 		end
 	end)
 end
@@ -10121,23 +10125,25 @@ local darkness = std.obj {
 }
 
 function mp:nouns()
-	self.scope:zap()
+	local scope = self.scope
+	scope:zap()
 	if type(std.here().nouns) == 'function' then
 		return std.here():nouns()
 	end
 	local oo = {}
-	self:objects(std.me():inroom(), oo)
-	self:objects(std.me(), oo)
-	self:objects(self.persistent, oo)
-	table.insert(oo, std.me())
+	self:objects(std.me():inroom(), oo, true, scope)
+	self:objects(std.list { std.me() }, oo, true, scope)
+	self:objects(self.persistent, oo, true, scope)
+	local ob = std.list {}
 	if std.here().word then
-		table.insert(oo, std.here())
+		ob:add(std.here())
 	end
 	if self:thedark() then
-		table.insert(oo, darkness)
+		ob:add(darkness)
 	end
+	self:objects(ob, oo, false, scope)
 	local dups = {}
-	self.scope:for_each(function(v)
+	scope:for_each(function(v)
 		if not dups[v] then
 			table.insert(oo, v)
 			dups[v] = true
@@ -10163,7 +10169,7 @@ function mp.token.noun(w)
 			mp:objects(o, oo)
 		end
 	else
-		oo = mp:nouns()
+		oo = mp.cache.nouns
 	end
 
 	local sm_dup = {
@@ -10880,6 +10886,7 @@ function mp:compl(str)
 				end
 			end
 		else -- matches
+			self.cache.nouns = self:nouns()
 			poss, eol, vargs = self:compl_match(words)
 		end
 		self:compl_ctx_push(poss)
@@ -11556,6 +11563,7 @@ function mp:parse(inp)
 		r = false
 		v = nil
 	else
+		self.cache.nouns = self:nouns()
 		r, v = self:input(self:norm(inp))
 	end
 	self.cache = { tokens = {} }; -- to completion
@@ -11719,7 +11727,7 @@ end
 function mp:lookup_noun(w, lev)
 	local k, len
 	local res = {}
-	local oo = self:nouns()
+	local oo = self.cache.nouns
 	for _, o in ipairs(oo) do
 		local ww = {}
 		o:noun(ww)
@@ -12508,7 +12516,7 @@ local everything = std.obj {
 		end
 		return false
 	end;
-}:persist()
+}:attr 'concealed':persist()
 
 --- Clear the metaparser window
 function mp:clear()
@@ -13149,6 +13157,17 @@ function mp:content(w, exam)
 		p(std.scene_delim)
 	end
 	self:objects(w, oo, false)
+	if w == std.here() then
+		self:objects(self.persistent, oo, false)
+	end
+	std.sort(oo, function (a, b)
+		a = std.tonum(a.pri) or 0
+		b = std.tonum(b.pri) or 0
+		if a == b then
+			return nil
+		end
+		return a < b
+	end)
 	local something
 	for _, v in ipairs(oo) do
 		local r, rc, desc
