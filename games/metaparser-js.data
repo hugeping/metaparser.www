@@ -7817,7 +7817,7 @@ end
 
 std.mod_init(function(_)
 Verb { "#Walk",
-	"идти,{#pref1}йти,{#pref1}йди,иди,{#pref2}бежать,{#pref2}бег/и,влез/ть,"..
+	"идти,{#pref1}йти,{#pref1}йди,иди,бежать,{#pref2}бежать,бег/и,{#pref2}бег/и,влез/ть,"..
 	"[|{#pref3}]ехать,едь,сесть,сядь,лечь,ляг,[в|]ста/ть,[в|]стан/ь",
 	"на {compass1} : Walk",
 	"на|в|во {noun}/вн,scene,enterable : Enter",
@@ -13535,6 +13535,10 @@ function mp:Exit(w)
 	if wh ~= w then
 		if have(w) and w:has'worn' then
 			mp:xaction ("Disrobe", w)
+			return
+		end
+		if wh:inside(w) then
+			p (mp.msg.Enter.EXITBEFORE)
 			return
 		end
 		p (mp.msg.Exit.NOTHERE)
