@@ -7322,7 +7322,8 @@ mp.msg.EMPTY = 'Простите?'
 mp.msg.UNKNOWN_VERB = "Непонятный глагол"
 mp.msg.UNKNOWN_VERB_HINT = "Возможно, вы имели в виду"
 mp.msg.INCOMPLETE = "Нужно дополнить предложение."
-mp.msg.INCOMPLETE_NOUN = "С чем вы хотите применить команду"
+mp.msg.INCOMPLETE_NOUN = "К чему вы хотите применить команду"
+mp.msg.INCOMPLETE_SECOND_NOUN = "С чем вы хотите применить команду"
 mp.msg.UNKNOWN_OBJ = function(w)
 	if not w then
 		p "Об этом предмете ничего не известно."
@@ -7935,7 +7936,7 @@ Verb {
 
 Verb {
 	"#Wear",
-	"наде/ть,оде/ть,облачи/ться",
+	"наде/ть,оде/ть",
 	"{noun}/вн,held : Wear",
 }
 
@@ -10242,7 +10243,8 @@ function mp.token.noun(w)
 	for _, o in ipairs(oo) do
 		for _, v in ipairs(mp:synonyms(o, w.morph)) do
 			if not sm_dup[v] then
-				table.insert(ww, { optional = w.optional, word = v, ob = o, morph = attr, alias = o.alias, hidden = true, synonym = true })
+				table.insert(ww, { optional = w.optional, word = v, ob = o, morph = attr,
+					alias = o.alias, hidden = true, synonym = true })
 				sm_dup[v] = true
 			end
 		end
@@ -12467,7 +12469,7 @@ function mp:err(err)
 		else
 			if need_noun then
 				if second_noun then
-					p (self.msg.INCOMPLETE_NOUN, " \"", second_noun, "\"?")
+					p (self.msg.INCOMPLETE_SECOND_NOUN or self.msg.INCOMPLETE_NOUN, " \"", second_noun, "\"?")
 				elseif parsed then
 					p (self.msg.INCOMPLETE_NOUN, " \"", parsed, "\"?")
 				else
