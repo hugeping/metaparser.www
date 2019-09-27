@@ -7161,6 +7161,14 @@ lang = { yo = false,
 }
 
 return lang
+This code uses dictionary files from the http://aot.ru project that is
+covered by the terms of the LGPL license.
+
+Dictionary files:
+https://sourceforge.net/p/seman/svn/HEAD/tree/trunk/Dicts/Morph/Russian/
+
+License:
+https://sourceforge.net/p/seman/svn/HEAD/tree/trunk/copying
 local std = stead
 local instead = std.ref '@instead'
 -- luacheck: read globals instead_savepath
@@ -7241,7 +7249,7 @@ mp.shorten_expert = {
 
 function mp:skip_filter(w)
 	for _, v in ipairs(w) do
-		if v == 'не' then
+		if v == 'не' or v == 'кроме' or v == 'вместо' then
 			return false
 		end
 	end
@@ -7314,7 +7322,7 @@ mp.msg.EMPTY = 'Простите?'
 mp.msg.UNKNOWN_VERB = "Непонятный глагол"
 mp.msg.UNKNOWN_VERB_HINT = "Возможно, вы имели в виду"
 mp.msg.INCOMPLETE = "Нужно дополнить предложение."
-mp.msg.INCOMPLETE_NOUN = "К чему вы хотите применить команду"
+mp.msg.INCOMPLETE_NOUN = "С чем вы хотите применить команду"
 mp.msg.UNKNOWN_OBJ = function(w)
 	if not w then
 		p "Об этом предмете ничего не известно."
@@ -7855,16 +7863,30 @@ Verb { "#Search",
 }
 
 Verb { "#Open",
-	"откр/ыть,распах/нуть,раскр/ыть,отпереть,отвори/ть,отопр/и",
+	"откр/ыть,распах/нуть,раскр/ыть,отвори/ть",
 	"{noun}/вн : Open",
 	"{noun}/вн {noun}/тв,held : Unlock",
 	"~ {noun}/тв,held {noun}/вн : Unlock reverse",
 }
 
+Verb { "#Unlock",
+	"отпереть,отопр/и",
+	"{noun}/вн {noun}/тв,held : Unlock",
+	"~ {noun}/тв,held {noun}/вн : Unlock reverse",
+}
+
 Verb { "#Close",
-	"закр/ыть,запереть",
+	"закр/ыть",
 	"{noun}/вн : Close",
 	"{noun}/вн {noun}/тв,held : Lock",
+	"~ {noun}/вн на {noun}/вн,held : Lock",
+	"~ {noun}/тв,held {noun}/вн : Lock reverse",
+}
+
+Verb { "#Lock",
+	"запереть",
+	"{noun}/вн {noun}/тв,held : Lock",
+	"~ {noun}/вн на {noun}/вн,held : Lock",
 	"~ {noun}/тв,held {noun}/вн : Lock reverse",
 }
 
@@ -8163,7 +8185,9 @@ Verb {
 	"Jump",
 	"через {noun}/вн,scene : JumpOver",
 	"~ в {noun}/вн,scene : Enter",
-	"~ {noun}/вн,scene : JumpOver",
+	"~ на {noun}/вн,scene : Climb",
+	"~ с|со {noun}/рд,scene : GetOff",
+	"~ +через {noun}/вн,scene : JumpOver",
 }
 
 Verb {
@@ -9092,14 +9116,24 @@ Verb { "#Search",
 }
 
 Verb { "#Open",
-	"open,unlock",
+	"open",
 	"{noun} : Open",
 	"{noun} with {noun}/held : Unlock"
 }
 
+Verb { "#Unlock",
+	"unlock",
+	"{noun} with {noun}/held : Unlock"
+}
+
 Verb { "#Close",
-	"close,lock",
+	"close",
 	"{noun} : Close",
+	"{noun} with {noun}/held : Lock",
+}
+
+Verb { "#Lock",
+	"lock",
 	"{noun} with {noun}/held : Lock",
 }
 
@@ -9823,7 +9857,7 @@ mp = std.obj {
 	detailed_inv = false;
 	daemons = std.list {};
 	{
-		version = "1.5";
+		version = "1.6";
 		cache = { tokens = {}, nouns = false };
 		scope = std.list {};
 		logfile = false;
@@ -11204,8 +11238,15 @@ function mp:match(verb, w, compl)
 		end
 	end
 
+	for k, v in ipairs(matches) do
+		v.nr = k
+	end
+
 	table.sort(matches,
 		function(a, b)
+			if #a == #b and a.wildcards == b.wildcards then
+				return a.nr < b.nr
+			end
 			if #a == #b then
 				return a.wildcards < b.wildcards
 			end
