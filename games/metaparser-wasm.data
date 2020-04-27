@@ -7367,7 +7367,7 @@ mp.msg.OPEN = function(w)
 	local hint = w:gram().hint
 	pr (" (",mp.mrd:word('открыт/' .. hint), ")")
 end
-mp.msg.EXITBEFORE = "Возможно, {#me/дт} нужно сначала {#if_has/#where,supporter,слезть с,вылезти из} {#where/рд}."
+mp.msg.EXITBEFORE = "Возможно, {#me/дт} нужно сначала {#if_has/#where,supporter,слезть с {#where/рд}.,покинуть {#where/вн}.}"
 
 mp.default_Event = "Exam"
 mp.default_Verb = "осмотреть"
@@ -10135,7 +10135,7 @@ function mp:objects(wh, oo, recurs, scope)
 		if v:disabled() then return nil, false end
 		if v:visible() or (scope and scope:lookup(v)) then
 			table.insert(oo, v)
-			if v.scope then
+			if scope and v.scope then
 				if std.is_obj(v.scope, 'list') then
 					scope:cat(v.scope)
 				elseif type(v.scope) == 'function' then
@@ -10287,7 +10287,7 @@ end
 function mp:eq(t1, t2, lev)
 	if t1:find("%*$") then
 		local t = t1:gsub("%*$", "")
-		t = mrd.lang.norm(t)
+		t = self:norm(t)
 		return self:__startswith(t2, t)
 	end
 	if lev then
@@ -13946,8 +13946,9 @@ function mp:move(w, wh, force)
 		r = w:walk(wh)
 		if r then p(r) end
 	else
+		local wpl =  mp:inside(std.me(), w)
 		place(w, wh)
-		if mp:inside(std.me(), w) then
+		if wpl then
 			r = std.me():walk(w)
 			if r then p(r) end
 		end
