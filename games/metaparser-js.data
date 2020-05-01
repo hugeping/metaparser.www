@@ -7300,7 +7300,7 @@ end
 --"находиться"
 mp.msg.SCENE = "{#Me} {#word/находиться,#me,нст} {#if_has/#here,supporter,на,в} {#here/пр,2}.";
 mp.msg.INSIDE_SCENE = "{#Me} {#word/находиться,#me,нст} {#if_has/#where,supporter,на,в} {#where/пр,2}.";
-mp.msg.TITLE_INSIDE = "({#if_has/#where,supporter,на,в} {#where/пр,2})";
+mp.msg.TITLE_INSIDE = "{#if_has/#where,supporter,на,в} {#where/пр,2}";
 
 mp.msg.COMPASS_EXAM = function(dir, ob)
 	if dir == 'u_to' then
@@ -8675,7 +8675,7 @@ end
 
 mp.msg.SCENE = "{#Me} {#is/#me} {#if_has/#here,supporter,on,in} {#thenoun/#here}.";
 mp.msg.INSIDE_SCENE = "{#Me} {#is/#me} {#if_has/#where,supporter,on,in} {#thenoun/#where}.";
-mp.msg.TITLE_INSIDE = "({#if_has/#where,supporter,on,in} {#thenoun/#where})";
+mp.msg.TITLE_INSIDE = "{#if_has/#where,supporter,on,in} {#thenoun/#where}";
 
 mp.msg.COMPASS_EXAM = function(dir, ob)
 	if dir == 'u_to' then
@@ -12739,7 +12739,8 @@ function std.obj:scene()
 	local sc = mp:visible_scope(s)
 	local title = iface:title(std.titleof(sc))
 	if s ~= sc then
-		title = title .. ' '..mp.fmt(mp.msg.TITLE_INSIDE)
+		local r = std.call(std.me():where(), "title")
+		title = title .. ' '..mp.fmt("(".. (r or mp.msg.TITLE_INSIDE) .. ")")
 	end
 	return title
 end
