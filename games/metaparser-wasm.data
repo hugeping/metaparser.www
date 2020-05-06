@@ -9769,14 +9769,6 @@ local function use_text_event()
 	return instead.text_input and instead.text_input()
 end
 
-local function post_inp()
-	if mp.autohelp then
-		mp:compl_fill(mp:compl(mp.inp))
-	elseif mp.autocompl then
-		mp:compl(mp.inp)
-	end
-end
-
 if PLATFORM == "ANDROID" or PLATFORM == "IOS" or PLATFORM == "SFOS" then
 local oclick = input.click
 
@@ -9812,7 +9804,7 @@ function input:text(sym)
 		return false
 	end
 	mp:inp_insert(sym)
-	post_inp()
+	mp:post_inp()
 	return '@mp_key '..tostring(sym)
 end
 
@@ -9832,7 +9824,7 @@ function input:key(press, key)
 
 	if press and not mod and not (mp.ctrl or mp.alt) then
 		if mp:key(key) then
-			post_inp()
+			mp:post_inp()
 			if key == 'f6' and mp.autoplay then key = 'enter' end
 			return '@mp_key '..tostring(key)
 		end
@@ -9926,6 +9918,17 @@ mp = std.obj {
 	text = '';
 	-- dict = {};
 }
+
+function mp:post_inp()
+	if mp.autohelp then
+		mp:compl_fill(mp:compl(mp.inp))
+	elseif mp.autocompl then
+		mp:compl(mp.inp)
+	end
+end
+
+function mp:onedit()
+end
 
 function mp:trim()
 	if self.winsize == 0 then
@@ -11774,7 +11777,7 @@ function mp:key_enter()
 	self:autoplay_inp()
 
 	self.cur = self.inp:len() + 1;
-	post_inp()
+	mp:post_inp()
 --	self:completion()
 	return r, v
 end
@@ -11998,6 +12001,7 @@ function(cmd)
 		if cmd[3] == '<clear>' then
 			mp.inp = '';
 			mp.cur = 1;
+			mp:onedit()
 			mp:compl_fill(mp:compl(mp.inp))
 			return true, false
 		elseif cmd[3] == '<enter>' then
@@ -12005,11 +12009,13 @@ function(cmd)
 		end
 		if cmd[3] == '<space>' then
 			mp:inp_insert(' ')
+			mp:onedit()
 			mp:compl_fill(mp:compl(mp.inp))
 			return true, false
 		end
 		if cmd[3] == '<backspace>' then
 			mp:inp_remove()
+			mp:onedit()
 			mp:compl_fill(mp:compl(mp.inp))
 			return true, false
 		end
@@ -12019,6 +12025,7 @@ function(cmd)
 		else
 			mp:completion(cmd[3])
 		end
+		mp:onedit()
 		return true, false
 	end
 	if (cmd[1] == '@mp_key' and cmd[2] == 'enter') or cmd[1] == 'look' then
@@ -12040,11 +12047,13 @@ function(cmd)
 			r, v = mp:key_enter(cmd[1] == 'look')
 			n = true
 		until not mp:autoplay_pending() or mp:noparser()
+		mp:onedit()
 		return r, v
 	end
 	if cmd[1] ~= '@mp_key' then
 		return
 	end
+	mp:onedit()
 	return true, false
 end)
 
@@ -14785,6 +14794,7 @@ function mp:Cut(w, wh)
 	if mp:check_live(w) then
 		return
 	end
+
 	if wh then
 		if mp:check_live(wh) then
 			return
@@ -14792,7 +14802,6 @@ function mp:Cut(w, wh)
 		if mp:check_held(wh) then
 			return
 		end
-		return
 	end
 	return false
 end
