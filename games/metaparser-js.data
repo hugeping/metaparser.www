@@ -7650,6 +7650,9 @@ mp.msg.Answer.EMPTY = "{#Me} не {#word/придумать,#me,прш} что �
 mp.msg.Answer.SELF = "Хороший ответ."
 
 mp.msg.Yes.YES = "Вопрос был риторическим."
+
+mp.msg.Use.USE = "Как именно?"
+
 --"продаваться"
 mp.msg.Buy.BUY = "{#First} не {#word/продаваться,нст,#first}."
 
@@ -8272,6 +8275,12 @@ Verb {
 	"#No",
 	"нет",
 	"No",
+}
+
+Verb {
+    "~ использ/овать,воспольз/оваться",
+    "{noun}/вн : Use",
+    "{noun}/тв : Use",
 }
 
 if DEBUG then
@@ -8980,7 +8989,7 @@ mp.msg.Answer.EMPTY = "{#Me} can't find anything to answer."
 mp.msg.Answer.SELF = "Good answer."
 
 mp.msg.Yes.YES = "That was a rhetorical question."
-mp.msg.Buy.BUY = "Nothing is on sale."
+mp.msg.Buy.USE = "How exactly?"
 
 mp.keyboard_space = '<space>'
 mp.keyboard_backspace = '<backspace>'
@@ -9480,6 +9489,11 @@ Verb {
 	"No",
 }
 
+Verb {
+    "~ use",
+    "{noun} : Use",
+}
+
 if DEBUG then
 	MetaVerb {
 		"#MetaWord",
@@ -9852,7 +9866,7 @@ mp = std.obj {
 	detailed_inv = false;
 	daemons = std.list {};
 	{
-		version = "1.7";
+		version = "1.9";
 		cache = { tokens = {}, nouns = false };
 		scope = std.list {};
 		logfile = false;
@@ -9916,6 +9930,7 @@ mp = std.obj {
 		};
 		shorten = {};
 		shorten_expert = {};
+		_pager_mode = false;
 	};
 	text = '';
 	-- dict = {};
@@ -11688,8 +11703,19 @@ std.world.display = function(s, state)
 		    av or false, l or false,
 		    pv or false) or ''
 	mp:log(l)
-	mp.text = mp.text ..  l .. '^^' -- .. fmt.anchor()
+	if mp._pager_mode then
+		mp.text = mp.text ..  fmt.anchor() .. l .. '^^' -- .. fmt.anchor()
+	else
+		mp.text = mp.text ..  l .. '^^' -- .. fmt.anchor()
+	end
 	return mp.text
+end
+
+function mp:pager_mode(mode)
+	self._pager_mode = not not mode
+	if std.ref'@theme' then
+		std.ref'@theme'.set ('win.scroll.mode', mode and 1 or 3)
+	end
 end
 
 function mp:completion(word)
@@ -15134,6 +15160,19 @@ end
 
 function mp:after_No()
 	p (mp.msg.Yes.YES)
+end
+
+mp.msg.Use = {}
+
+function mp:Use(w)
+	if mp:check_touch() then
+		return
+	end
+	return false
+end
+
+function mp:after_Use()
+	p (mp.msg.Use.USE)
 end
 
 function mp:MetaHelp()
