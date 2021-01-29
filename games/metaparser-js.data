@@ -58,6 +58,7 @@ local instead = std.obj { nam = '@instead' }
 
 instead.nosave = false
 instead.noautosave = false
+instead.tiny = true
 
 function instead.mouse_filter()
 	return 0
@@ -127,11 +128,11 @@ function iface:title(str) -- hide title
 	return str
 end
 
-function iface:img() return end
+function iface:img() return '' end
 
-function iface:imgl() return end
+function iface:imgl() return '' end
 
-function iface:imgr() return end
+function iface:imgr() return '' end
 
 function iface:nb(t)
 	return t == '' and ' ' or t
@@ -958,529 +959,6 @@ std.mod_init(function()
 		pl = std.ref 'player',
 	}
 end)
-local std = stead
-local input = std.ref '@input'
-local instead = std.ref '@instead'
-
--- luacheck: no self
-function input:event(...)
--- luacheck: self
-	local a
-	for _, v in std.ipairs {...} do
-		a = (a and (a..', ') or ' ') .. std.dump(v)
-	end
-	return '@user_event'.. a or ''
-end
-
-std.mod_cmd(function(cmd)
-	if cmd[1] ~= '@user_event' then
-		return
-	end
-	local r, v =  std.call(instead, 'onevent', cmd[2])
-	if not r and not v then -- nothing todo
-		return nil, false
-	end
-	return r, v
-end)
--- luacheck: globals const global declare
-
-local declarations = {}
-local variables = {}
-local std = stead
-
-local type = std.type
-local rawget = std.rawget
-local rawset = std.rawset
-local pairs = std.pairs
-local table = std.table
-local next = std.next
-
-local function __declare_one(k, v, t)
-	local link
-
-	if type(k) ~= 'string' then -- k:find("^[a-zA-Z_][a-zA-Z0-9_]*$") then
-		std.err ("Wrong declaration name: "..k, 3)
-	end
-	if declarations[k] then
-		std.err ("Duplicate declaration: "..k, 3)
-	end
-
-	link = rawget(_G, k)
-
-	declarations[k] = { value = v, type = t, link = link }
-
-	if link and v ~= link then
-		std.err("Overwite global declaration: "..std.tostr(k), 3)
-	end
-
-	if t == 'global' then
-		if type(v) == 'function' and not std.functions[v] then
-			std.err("Use declare to declare function: "..k, 3)
-		end
-		rawset(_G, k, v)
-		variables[k] = true
-	end
-	if type(v) == 'function' and not std.functions[v] then
-		std.functions[v] = k
-	end
-	if std.__in_init and std.is_obj(v, 'list') then
-		table.insert(v.__in_init, v)
-	end
-end
-
-local function __declare(n, t)
-	if stead.game then
-		std.err ("Use "..t.." only in global context", 2)
-	end
-	if type(n) == 'string' then
-		return function(v)
-			if v == nil then
-				v = false
---				std.err("Wrong declaration: "..std.tostr(t), 2)
-			end
-			__declare_one(n, v, t)
-		end
-	end
-	if type(n) ~= 'table' then
-		std.err ("Wrong parameter to "..n, 2)
-	end
-	for k, v in std.pairs(n) do
-		__declare_one(k, v, t)
-	end
-	return n
-end
-
-function std.const(n)
-	return __declare(n, 'const')
-end
-
-function std.global(n)
-	return __declare(n, 'global')
-
-end
-
-function std.declare(n)
-	return __declare(n, 'declare')
-end
-
-local function do_depends(t, tables, deps)
-	if type(t) ~= 'table' then return end
-	if tables[t] then
-		deps[t] = tables[t]
-	end
-	for _, v in pairs(t) do
-		if type(v) == 'table' and not std.getmt(v) then
-			do_depends(v, tables, deps)
-		end
-	end
-end
-
-local function makedeps(nam, depends, deps)
-	local ndeps = {}
-	local rc = false
-
-	local t = rawget(_G, nam)
-	if type(t) ~= 'table' then
-		return
-	end
-	if type(depends[nam]) ~= 'table' then
-		return
-	end
-	local d = depends[nam]
-	for k, v in pairs(d) do
-		local dd = depends[v]
-		if dd and k ~= t then
-			ndeps[k] = v
-			rc = rc or makedeps(v, depends, deps)
-		end
-	end
-	if not next(ndeps) then
-		depends[nam] = nil
-		table.insert(deps, t)
-		rc = true
-	else
-		depends[nam] = ndeps
-	end
-	return rc
-end
-
-local function mod_save(fp)
-	-- save global variables
-	std.tables = {}
-	local tables = {}
-	local deps = {}
-	for k, v in pairs(declarations) do -- name all table variables
-		local o = rawget(_G, k) or v.value
-		if type(o) == 'table' then
-			if not tables[o] then
-				tables[o] = k
-			end
-		end
-	end
-
-	for k, _ in pairs(variables) do
-		local d = {}
-		local o = rawget(_G, k)
-		do_depends(o, tables, d)
-		if k == tables[o] then -- self depend
-			d[o] = nil
-		end
-		if next(d) then
-			deps[k] = d
-		end
-	end
-
-	std.tables = tables -- save all depends
-
-	for k, _ in pairs(variables) do -- write w/o deps
-		local o = rawget(_G, k)
-		if not deps[k] then
-			std.save_var(o, fp, k)
-		end
-	end
-	for k, _ in pairs(variables) do
-		local d = {}
-		while makedeps(k, deps, d) do
-			for i=1, #d do
-				std.save_var(d[i], fp, k)
-			end
-			d = {}
-		end
-	end
-end
-
-local function mod_init()
-	std.setmt(_G, {
-	__index = function(_, n)
-		local d = declarations[n]
-		if d then --
-			if std.game and (d.type ~= 'const') then
-				rawset(_, n, d.value)
-			end
-			return d.value
-		end
-		local f = std.getinfo(2, "S").source
-		std.err ("Uninitialized global variable: "..n.." in "..f, 2)
-	end;
-	__newindex = function(t, k, v)
-		if not std.game and std.is_obj(v) then -- autodeclare objects
-			__declare_one(k, v, 'declare')
-		end
-		local d = declarations[k]
-		if d then
-			if v == d.value then
-				return --nothing todo
-			end
-			if not std.game then
-				d.value = v
-				return
-			end
-			if d.type == 'const' then
-				std.err ("Modify read-only constant: "..k, 2)
-			else
-				d.value = v
-				rawset(t, k, v)
-			end
-			return
-		end
-		if std.game or type(v) ~= 'function' then
-			local f = std.getinfo(2, "S").source
-			if f ~= '=[C]' then
-				std.err ("Set uninitialized variable: "..k.." in "..f, 2)
-			end
-		end
-		rawset(t, k, v)
-	end
-	})
-end
-
-std.obj {
-	nam = '@declare';
-	ini = function(_, ...)
--- init all list objs
-		for _, v in pairs(declarations) do
-			if std.is_obj(v.value, 'list') then
-				v.value:__ini(...)
-			end
-		end
-	end;
-	declarations = function()
-		return declarations;
-	end;
-	variables = function()
-		return variables
-	end;
-}
-
-local function mod_done()
-	std.setmt(_G, {})
-	local decl = {}
-	for k, v in pairs(declarations) do
-		local o = std.rawget(_G, k) or v.value
-		if std.is_system(o) then -- save system declarations
-			decl[k] = v
-		elseif not v.link then
-			rawset(_G, k, nil)
-		end
-	end
-	std.tables = {}
-	std.functions = {}
-	declarations = decl
-	variables = {}
-end
-
-std.mod_init(mod_init)
-std.mod_done(mod_done)
-std.mod_save(mod_save)
-
-const = std.const
-global = std.global
-declare = std.declare
--- luacheck: globals snd
-snd = stead.ref '@snd'local std = stead
-
-std.mod_step(function(state)
-	if not state then
-		return
-	end
-	if std.here().noinv and not std.me().__inv_disabled then
-		std.me():close()
-		std.me().__inv_disabled = true
-	elseif std.me().__inv_disabled and not std.here().noinv then
-		std.me():open()
-		std.me().__inv_disabled = nil
-	end
-end)
-
-std.mod_done(function()
-	if std.me().__inv_disabled then
-		std.me():open()
-		std.me().__inv_disabled = nil
-	end
-end)
--- luacheck: globals theme
-theme = stead.ref '@theme'
-local std = stead
-
-std.mod_step(function(state)
-	if not state then
-		return
-	end
-	if std.here().nolife and std.game:live() then
-		std.game:lifeoff()
-	elseif not std.game:live() and not std.here().nolife then
-		std.game:lifeon()
-	end
-end)
-
-std.mod_done(function()
-	if not std.game:live() then
-		std.game:lifeon()
-	end
-end)
--- luacheck: globals timer
-timer = stead.ref '@timer'
-globals = {
-	'stead',
-	'LANG',
-}
-local std = stead
-local type = std.type
-local iface = std.ref '@iface'
-
--- luacheck: globals fmt
-
-fmt = std.obj {
-	nam = '@format';
-	para = false;
-	nopara = '_';
-	para_space = '    ';
-	quotes = true;
-	dash = true;
-	filter = nil;
-}
-
-std.obj {
-	nam = '$fmt';
-	act = function(_, w, ...)
-		if type(w) ~= 'string' or not fmt[w] then
-			return w
-		end
-		return fmt[w](...)
-	end
-}
-
-std.format = function(r, state)
-	local utf8 = (std.ref 'game'.codepage == 'UTF-8' or std.ref 'game'.codepage == 'utf-8')
-
-	if type(r) ~= 'string' then
-		return r
-	end
-
-	if type(fmt.filter) == 'function' then
-		r = fmt.filter(r, state)
-	end
-
-	if utf8 then
-		if fmt.dash then
-			r = r:gsub("%-%-%-*", { ['--'] = '—' })
-			r = r:gsub("[ \t]+—", iface:nb('').."—"); -- do not break dash
-			r = r:gsub("^([^ \t]*)—[ \t]+", "%1— ");
-			r = r:gsub("(\n[^ \t]*)—[ \t]+", "%1— ");
-		end
-		if fmt.quotes then
-			r = r:gsub('_"','«'):gsub('"_',"»");
-			r = r:gsub('"([^"]*)"','«%1»');
-			r = r:gsub(',,','„'):gsub("''",'”');
-		end
-	end
-	if not state then
-		return r
-	end
-
-	if fmt.para then
-		r = r:gsub('\n([^\n])', '\001%1'):gsub('\001[ \t]*'..fmt.nopara,'\n'):gsub('\001[ \t]*', '\n'..iface:nb(fmt.para_space));
-		r = r:gsub('^[ \t]*', '\001'):gsub('\001[ \t]*'..fmt.nopara,''):gsub('\001[ \t]*', iface:nb(fmt.para_space));
-	end
-	return r
-end
-
-function fmt.em(str)
-	return iface:em(str)
-end
-
-function fmt.c(str)
-	return iface:center(str)
-end
-
-function fmt.j(str)
-	return iface:just(str)
-end
-
-function fmt.l(str)
-	return iface:left(str)
-end
-
-function fmt.r(str)
-	return iface:right(str)
-end
-
-function fmt.b(str)
-	return iface:bold(str)
-end
-
-function fmt.top(str)
-	return iface:top(str)
-end
-
-function fmt.bottom(str)
-	return iface:bottom(str)
-end
-
-function fmt.middle(str)
-	return iface:middle(str)
-end
-
-function fmt.nb(str)
-	return iface:nb(str)
-end
-
-function fmt.anchor(str)
-	return iface:anchor(str)
-end
-
-function fmt.img(str)
-	return iface:img(str)
-end
-
-function fmt.imgl(str)
-	return iface:imgl(str)
-end
-
-function fmt.imgr(str)
-	return iface:imgr(str)
-end
-
-function fmt.u(str)
-	return iface:under(str)
-end
-
-function fmt.st(str)
-	return iface:st(str)
-end
-
-function fmt.tab(str, al)
-	return iface:tab(str, al)
-end
-
-function fmt.y(str, al)
-	return iface:y(str, al)
-end
--- luacheck: globals snapshots
-
-local std = stead
-
-local SNAPSHOT = false
-local INWRITE = false
-
-local snap = std.obj {
-	nam = '@snapshots';
-	data = {};
-	save = function(s, ...)
-		if INWRITE then return end
-		return std.obj.save(s, ...)
-	end;
-	write = function(s, name)
-		name = name or 'default'
-		local fp = { -- fake file object
-			data = '';
-			write = function(self, str)
-				self.data = self.data .. str
-			end;
-		}
-		INWRITE = true std:save(fp) INWRITE = false
-		s.data[name] = fp.data
-	end;
-	make = function(_, name)
-		SNAPSHOT = name or 'default'
-	end;
-	exists = function(s, name)
-		name = name or 'default'
-		return s.data[name]
-	end;
-	remove = function(s, name)
-		name = name or 'default'
-		s.data[name] = nil
-	end;
-	restore = function(s, name) -- like std:load()
-		name = name or 'default'
-		if not s:exists(name) then
-			return false
-		end
-		std:reset()
-		std.ref 'game':__ini()
-		local f, err = std.eval(s.data[name])
-		if not f then
-			std.err(err, 2)
-		end
-		f();
-		std.ref 'game':__ini()
-		std.ref 'game':__start(true)
-		return std.nop()
-	end;
-}
-
-snapshots = snap
-
-std.mod_cmd(function()
-	if SNAPSHOT then
-		snap:write(SNAPSHOT)
-		SNAPSHOT = nil
-	end
-end)
-
--- std.mod_done(function()
--- end)
 -- luacheck: read globals iface
 
 local std = stead
@@ -1861,59 +1339,10 @@ std.phr = std.class({
 -- luacheck: globals sprite pixels
 sprite = stead.ref '@sprite'
 pixels = stead.ref '@pixels'
--- luacheck: globals prefs
-
-local std = stead
-
-local preferences = std.obj {
-	nam = '@prefs',
-	load = function(_)
-		local name = std.savepath() .. '/prefs';
-		local f, err = std.loadfile(name);
-		if not f then
-			return false, err
-		end
-		local strict = std.nostrict; std.nostrict = true
-		f();
-		std.nostrict = strict
-		return true
-	end,
-	store = function(s)
-		return s:save()
-	end,
-	save = function(s) -- save prefs on every save
-		local name = std.savepath() .. '/prefs';
-		local name_tmp = name..'.tmp'
-		local fp, _ = std.io.open(name_tmp, "wb");
-		if not fp then
-			return false
-		end
-		std.obj.save(s, fp, 'std "@prefs"')
-		fp:flush();
-		fp:close();
-		std.os.remove(name)
-		return std.os.rename(name_tmp, name);
-	end,
-	purge = function(_)
-		local name = std.savepath() .. '/prefs';
-		return std.os.remove(name);
-	end
-};
-
-local loaded
-
-std.mod_start(function()
-	loaded = prefs:load()
-end)
-
-std.mod_done(function()
-	if loaded then
-		prefs:store()
-		loaded = false
-	end
-end)
-
-prefs = preferences
+globals = {
+	'stead',
+	'LANG',
+}
 -- STEAD3 API
 
 -- luacheck: globals iface init start stead
@@ -2965,7 +2394,8 @@ end
 local rnd_seed = 1980 + 1978
 function std:init()
 	std.rawset(_G, 'iface', std.ref '@iface') -- force iface override
-	std.world { nam = 'game', player = 'player', codepage = 'UTF-8', dsc = [[STEAD3, 2020 by Peter Kosyh^https://instead-hub.github.io^^]] };
+	std.world { nam = 'game', player = 'player', codepage = 'UTF-8',
+		dsc = [[STEAD3, 2020 by Peter Kosyh^https://instead-hub.github.io^^]] };
 	std.room { nam = 'main' }
 	std.player { nam = 'player', room = 'main' }
 
@@ -4802,884 +4232,606 @@ end
 require "declare"
 require "dlg"
 require "stdlib"
-//  ======  СУЩЕСТВИТЕЛЬНЫЕ   ========
-
-// существительные мужского рода
-аа A С мр,ед,им
-аб A С мр,ед,рд
-Эф A С мр,ед,рд,2
-ав A С мр,ед,дт
-аг A С мр,ед,вн
-ад A С мр,ед,тв
-ае A С мр,ед,пр
-Эх A С мр,ед,пр,2
-ас A С мр,ед,зв,
-аж A С мр,мн,им
-аз A С мр,мн,рд
-аи A С мр,мн,дт
-ай A С мр,мн,вн
-ак A С мр,мн,тв
-ал A С мр,мн,пр
-ам B С мр,0
-ан B С мр,ед,0
-
-// =============  разговорный  ================
-Юо A С мр,ед,им,разг 
-Юп A С мр,ед,рд,разг 
-Юр A С мр,ед,дт,разг 
-Юс A С мр,ед,вн,разг 
-Ют A С мр,ед,тв,разг 
-Юф A С мр,ед,пр,разг 
-Юх A С мр,ед,зв,разг 
-Яб A С мр,мн,им,разг 
-Яа A С мр,мн,рд,разг
-Яв A С мр,мн,дт,разг
-Яг A С мр,мн,вн,разг
-Яд A С мр,мн,тв,разг
-Яж A С мр,мн,пр,разг
-
-
-// =============  архаизм  ================
-го A С мр,ед,им,арх 
-гп A С мр,ед,рд,арх 
-гр A С мр,ед,дт,арх 
-гс A С мр,ед,вн,арх 
-гт A С мр,ед,тв,арх 
-гу A С мр,ед,пр,арх 
-гф A С мр,мн,им,арх 
-гх A С мр,мн,рд,арх
-гц A С мр,мн,дт,арх
-гч A С мр,мн,вн,арх
-гш A С мр,мн,тв,арх
-гщ A С мр,мн,пр,арх
-
-
-// существительные мужского-женского рода
-
-ва E С мр-жр,ед,им
-вб E С мр-жр,ед,рд
-вв E С мр-жр,ед,дт
-вг E С мр-жр,ед,вн
-вд E С мр-жр,ед,тв
-ве E С мр-жр,ед,пр
-вж E С мр-жр,мн,им
-вз E С мр-жр,мн,рд
-ви E С мр-жр,мн,дт
-вй E С мр-жр,мн,вн
-вк E С мр-жр,мн,тв
-вл E С мр-жр,мн,пр
-вм F С мр-жр,0
-вн F С мр-жр,ед,0
-
-
-// существительные мужского-женского рода (архаизм)
-во E С арх,мр-жр,ед,им
-вп E С арх,мр-жр,ед,рд
-вр E С арх,мр-жр,ед,дт
-вс E С арх,мр-жр,ед,вн
-вт E С арх,мр-жр,ед,тв
-ву E С арх,мр-жр,ед,пр
-вф E С арх,мр-жр,мн,им
-вх E С арх,мр-жр,мн,рд
-вц E С арх,мр-жр,мн,дт
-вч E С арх,мр-жр,мн,вн
-вш E С арх,мр-жр,мн,тв
-вщ E С арх,мр-жр,мн,пр
-
-// существительные женского рода
-га G С жр,ед,им
-гб G С жр,ед,рд
-гв G С жр,ед,дт
-гг G С жр,ед,вн
-гд G С жр,ед,тв
-ге G С жр,ед,пр
-Эч G С жр,ед,пр,2
-Йш G С жр,ед,зв
-гж G С жр,мн,им
-гз G С жр,мн,рд
-ги G С жр,мн,дт
-гй G С жр,мн,вн
-гк G С жр,мн,тв
-гл G С жр,мн,пр
-гм H С жр,0
-гн H С жр,ед,0
-
-// существительные женского (архаизм)
-Йа G С арх,жр,ед,им
-Йб G С арх,жр,ед,рд
-Йв G С арх,жр,ед,дт
-Йг G С арх,жр,ед,вн
-Йд G С арх,жр,ед,тв
-Йе G С арх,жр,ед,пр
-Йж G С арх,жр,мн,им
-Йз G С арх,жр,мн,рд
-Йи G С арх,жр,мн,дт
-Йй G С арх,жр,мн,вн
-Йк G С арх,жр,мн,тв
-Йл G С арх,жр,мн,пр
-
-
-// существительные женского (разговорный)
-Йм G С разг,жр,ед,им
-Йн G С разг,жр,ед,рд
-Йо G С разг,жр,ед,дт
-Йп G С разг,жр,ед,вн
-Йр G С разг,жр,ед,тв
-Йс G С разг,жр,ед,пр
-Йт G С разг,жр,мн,им
-Йу G С разг,жр,мн,рд
-Йф G С разг,жр,мн,дт
-Йх G С разг,жр,мн,вн
-Йц G С разг,жр,мн,тв
-Йч G С разг,жр,мн,пр
-
-
-
-// существительные среднего рода
-
-еа K С ср,ед,им
-еб K С ср,ед,рд
-ев K С ср,ед,дт
-ег K С ср,ед,вн
-ед K С ср,ед,тв
-ее K С ср,ед,пр
-еж K С ср,мн,им
-ез K С ср,мн,рд
-еи K С ср,мн,дт
-ей K С ср,мн,вн
-ек K С ср,мн,тв
-ел K С ср,мн,пр
-ем L С ср,0
-ен L С ср,ед,0
-
-// им. Ленина
-Эя K С ср,ед,рд,аббр
-
-// существительные среднего рода (разговорный)
-Яз K С разг,ср,ед,им
-Яи K С разг,ср,ед,рд
-Як K С разг,ср,ед,дт
-Ял K С разг,ср,ед,вн
-Ям K С разг,ср,ед,тв
-Ян K С разг,ср,ед,пр
-Яо K С разг,ср,мн,им
-Яп K С разг,ср,мн,рд
-Яр K С разг,ср,мн,дт
-Яс K С разг,ср,мн,вн
-Ят K С разг,ср,мн,тв
-Яу K С разг,ср,мн,пр
-
-// pluralia tantum
-иж Q С мн,мн,им
-из Q С мн,мн,рд
-ии Q С мн,мн,дт
-ий Q С мн,мн,вн
-ик Q С мн,мн,тв
-ил Q С мн,мн,пр
-им R С мн,0
-
-//  аббревиатуры
-ао B С мр,аббр,0,
-ап B С мр,ед,аббр,0
-ат H С жр,аббр,0
-ау H С жр,ед,аббр,0
-ац H С ср,аббр,0
-ач H С ср,ед,аббр,0
-аъ R С мн,аббр,0
-
-// имена
-
-бо C С мр,имя,ед,им
-бп C С мр,имя,ед,рд
-бр C С мр,имя,ед,дт
-бс C С мр,имя,ед,вн
-бт C С мр,имя,ед,тв
-бу C С мр,имя,ед,пр
-бь C С мр,имя,ед,зв,разг
-бф C С мр,имя,мн,им
-бх C С мр,имя,мн,рд
-бц C С мр,имя,мн,дт
-бч C С мр,имя,мн,вн
-бш C С мр,имя,мн,тв
-бщ C С мр,имя,мн,пр
-
-бН I С мр,имя,0
-
-
-вН E С мр-жр,имя,0
-вО E С мр-жр,имя,ед,им
-вП E С мр-жр,имя,ед,рд
-вР E С мр-жр,имя,ед,дт
-вС E С мр-жр,имя,ед,вн
-вТ E С мр-жр,имя,ед,тв
-вУ E С мр-жр,имя,ед,пр
-вЬ E С мр-жр,имя,ед,зв,разг
-вФ E С мр-жр,имя,мн,им
-вХ E С мр-жр,имя,мн,рд
-вЦ E С мр-жр,имя,мн,дт
-вЧ E С мр-жр,имя,мн,вн
-вШ E С мр-жр,имя,мн,тв
-вЩ E С мр-жр,имя,мн,пр
-
-
-до I С жр,имя,ед,им
-дп I С жр,имя,ед,рд
-др I С жр,имя,ед,дт
-дс I С жр,имя,ед,вн
-дт I С жр,имя,ед,тв
-ду I С жр,имя,ед,пр
-дь I С жр,имя,ед,зв,разг
-дф I С жр,имя,мн,им
-дх I С жр,имя,мн,рд
-дц I С жр,имя,мн,дт
-дч I С жр,имя,мн,вн
-дш I С жр,имя,мн,тв
-дщ I С жр,имя,мн,пр
-
-
-дН I С жр,имя,0
-
-
-
-// мужские отчества 
-
-Ра Q С мр,отч,ед,им,
-Рб Q С мр,отч,ед,рд,
-Рв Q С мр,отч,ед,дт,
-Рг Q С мр,отч,ед,вн,
-Рд Q С мр,отч,ед,тв,
-Ре Q С мр,отч,ед,пр,
-Рн Q С мр,отч,мн,им,
-Ро Q С мр,отч,мн,рд,
-Рп Q С мр,отч,мн,дт,
-Рр Q С мр,отч,мн,вн,
-Рс Q С мр,отч,мн,тв,
-Рт Q С мр,отч,мн,пр,
-
-// женские отчества 
-
-Рж Q С жр,отч,ед,им,
-Рз Q С жр,отч,ед,рд,
-Ри Q С жр,отч,ед,дт,
-Рк Q С жр,отч,ед,вн,
-Рл Q С жр,отч,ед,тв,
-Рм Q С жр,отч,ед,пр,
-Ру Q С жр,отч,мн,им,
-Рф Q С жр,отч,мн,рд,
-Рх Q С жр,отч,мн,дт,
-Рц Q С жр,отч,мн,вн,
-Рч Q С жр,отч,мн,тв,
-Рш Q С жр,отч,мн,пр,
-
-
-
-// мужские отчества  (разг.)
-
-Та Q С мр,отч,разг,ед,им,
-Тб Q С мр,отч,разг,ед,рд,
-Тв Q С мр,отч,разг,ед,дт,
-Тг Q С мр,отч,разг,ед,вн,
-Тд Q С мр,отч,разг,ед,тв,
-Те Q С мр,отч,разг,ед,пр,
-Тн Q С мр,отч,разг,мн,им,
-То Q С мр,отч,разг,мн,рд,
-Тп Q С мр,отч,разг,мн,дт,
-Тр Q С мр,отч,разг,мн,вн,
-Тс Q С мр,отч,разг,мн,тв,
-Тт Q С мр,отч,разг,мн,пр,
-
-// женские отчества  (разг.)
-
-Тж Q С жр,отч,разг,ед,им,
-Тз Q С жр,отч,разг,ед,рд,
-Ти Q С жр,отч,разг,ед,дт,
-Тк Q С жр,отч,разг,ед,вн,
-Тл Q С жр,отч,разг,ед,тв,
-Тм Q С жр,отч,разг,ед,пр,
-Ту Q С жр,отч,разг,мн,им,
-Тф Q С жр,отч,разг,мн,рд,
-Тх Q С жр,отч,разг,мн,дт,
-Тц Q С жр,отч,разг,мн,вн,
-Тч Q С жр,отч,разг,мн,тв,
-Тш Q С жр,отч,разг,мн,пр,
-
-
-
-//  ======  ПРИЛАГАТЕЛЬНЫЕ   ========
-
-йа Y П мр,ед,им,од,но
-йб Y П мр,ед,рд,од,но
-йв Y П мр,ед,дт,од,но
-йг Y П мр,ед,вн,од
-Рщ Y П мр,ед,вн,но
-йд Y П мр,ед,тв,од,но
-йе Y П мр,ед,пр,од,но
-йж Y П жр,ед,им,од,но
-йз Y П жр,ед,рд,од,но
-йи Y П жр,ед,дт,од,но
-йй Y П жр,ед,вн,од,но
-йк Y П жр,ед,тв,од,но
-йл Y П жр,ед,пр,од,но
-йм Y П ср,ед,им,од,но
-йн Y П ср,ед,рд,од,но
-йо Y П ср,ед,дт,од,но
-йп Y П ср,ед,вн,од,но
-йр Y П ср,ед,тв,од,но
-йс Y П ср,ед,пр,од,но
-йт Y П мн,им,од,но
-йу Y П мн,рд,од,но
-йф Y П мн,дт,од,но
-йх Y П мн,вн,од
-Рь Y П мн,вн,но
-йц Y П мн,тв,од,но
-йч Y П мн,пр,од,но
-йш Y КР_ПРИЛ мр,ед,од,но
-йщ Y КР_ПРИЛ жр,ед,од,но
-йы Y КР_ПРИЛ ср,ед,од,но
-йэ Y КР_ПРИЛ мн,од,но
-йю Y П сравн,од,но
-йъ Y П сравн,2,од,но
-йь Y П сравн,од,но,разг
-йя Z П 0,од,но
-
-//== превосходная степень прилагательного
-иа Y П прев,мр,ед,им,од,но
-иб Y П прев,мр,ед,рд,од,но
-ив Y П прев,мр,ед,дт,од,но
-иг Y П прев,мр,ед,вн,од
-ид Y П прев,мр,ед,вн,но
-ие Y П прев,мр,ед,тв,од,но
-Гб Y П прев,мр,ед,пр,од,но
-Гв Y П прев,жр,ед,им,од,но
-Гг Y П прев,жр,ед,рд,од,но
-Гд Y П прев,жр,ед,дт,од,но
-Ге Y П прев,жр,ед,вн,од,но
-Гж Y П прев,жр,ед,тв,од,но
-Гз Y П прев,жр,ед,пр,од,но
-ин Y П прев,ср,ед,им,од,но
-ио Y П прев,ср,ед,рд,од,но
-ип Y П прев,ср,ед,дт,од,но
-ир Y П прев,ср,ед,вн,од,но
-ис Y П прев,ср,ед,тв,од,но
-ит Y П прев,ср,ед,пр,од,но
-иу Y П прев,мн,им,од,но
-иф Y П прев,мн,рд,од,но
-их Y П прев,мн,дт,од,но
-иц Y П прев,мн,вн,од
-ич Y П прев,мн,вн,но
-иш Y П прев,мн,тв,од,но
-ищ Y П прев,мн,пр,од,но
-
-
-
-
-//  ========   безличные глаголы  ============
-// подуматься,светать
-нр a ИНФИНИТИВ безл
-// подумается
-нс a Г безл,буд 
-// подумалось,светало
-нт a Г безл,прш
-// светает
-ну a Г безл,нст
-
-
-
-ка a ИНФИНИТИВ дст
-
-//  ========================================
-//  ========   личные формы глагола  ============
-
-кб a Г дст,нст,1л,ед
-кв a Г дст,нст,1л,мн
-кг a Г дст,нст,2л,ед
-кд a Г дст,нст,2л,мн
-ке a Г дст,нст,3л,ед
-кж a Г дст,нст,3л,мн
-кз a Г дст,прш,мр,ед
-ки a Г дст,прш,жр,ед
-кй a Г дст,прш,ср,ед
-кк a Г дст,прш,мн
-кп a Г дст,буд,1л,ед
-кр a Г дст,буд,1л,мн
-кс a Г дст,буд,2л,ед
-кт a Г дст,буд,2л,мн
-ку a Г дст,буд,3л,ед
-кф a Г дст,буд,3л,мн
-
-
-// разговорные формы: "ложу", "ложим","дышут", "ложут", "ложат", "дождуся"
-Ръ a Г дст,нст,1л,ед,разг
-Ры a Г дст,нст,1л,мн,разг
-Рэ a Г дст,нст,2л,ед,разг
-Рю a Г дст,нст,2л,мн,разг
-Ря a Г дст,нст,3л,ед,разг
-кю a Г дст,нст,3л,мн,разг
-кя a Г дст,прш,мн,разг
-
-кэ a Г дст,буд,1л,ед,разг
-Эа a Г дст,буд,1л,мн,разг
-Эб a Г дст,буд,2л,ед,разг
-Эв a Г дст,буд,2л,мн,разг
-Эг a Г дст,буд,3л,ед,разг
-Эд a Г дст,буд,3л,мн,разг
-
-
-
-// архаичные формы: "указует", 
-Эе a Г дст,нст,1л,ед,арх
-Эж a Г дст,нст,1л,мн,арх
-Эз a Г дст,нст,2л,ед,арх
-Эи a Г дст,нст,2л,мн,арх
-Эй a Г дст,нст,3л,ед,арх
-Эк a Г дст,нст,3л,мн,арх
-Эл a Г дст,прш,мн,арх
-
-Эм a Г дст,буд,1л,ед,арх
-Эн a Г дст,буд,1л,мн,арх
-Эо a Г дст,буд,2л,ед,арх
-Эп a Г дст,буд,2л,мн,арх
-Эр a Г дст,буд,3л,ед,арх
-Эс a Г дст,буд,3л,мн,арх
-
-
-// ===================================================
-// ==============   ДЕЕПРИЧАСТИЕ ====================
-// ===================================================
-кн a ДЕЕПРИЧАСТИЕ дст,нст
-ко a ДЕЕПРИЧАСТИЕ дст,прш
-
-// ===================================================
-// ==============   ДЕЕПРИЧАСТИЕ (архаизм)  ==========
-// ===================================================
-Эт a ДЕЕПРИЧАСТИЕ дст,нст,арх
-Эу a ДЕЕПРИЧАСТИЕ дст,прш,арх
-
-//===================================================
-// ==============   ИМПЕРАТИВ    ====================
-// "не будем же забывать наших предков!"
-
-нп a Г дст,пвл,1л,мн
-къ a Г дст,пвл,1л,ед
-кл a Г дст,пвл,2л,ед
-км a Г дст,пвл,2л,мн
-
-
-//  "прощевайте"
-ль a Г дст,пвл,2л,ед,разг
-кь a Г дст,пвл,2л,мн,разг
-
-// см.
-Эю a Г дст,пвл,2л,ед,аббр 
-
-//  "изыди", "изыдите"
-фъ a Г дст,пвл,2л,ед,арх
-фю a Г дст,пвл,2л,мн,арх
-
-
-//  действительное причастие настоящего времени
-ла a ПРИЧАСТИЕ од,но,нст,дст,ед,мр,им
-лб a ПРИЧАСТИЕ од,но,нст,дст,ед,мр,рд
-лв a ПРИЧАСТИЕ од,но,нст,дст,ед,мр,дт
-лг a ПРИЧАСТИЕ од,нст,дст,ед,мр,вн
-Ла a ПРИЧАСТИЕ но,нст,дст,ед,мр,вн
-лд a ПРИЧАСТИЕ од,но,нст,дст,ед,мр,тв
-ле a ПРИЧАСТИЕ од,но,нст,дст,ед,мр,пр
-лз a ПРИЧАСТИЕ од,но,нст,дст,ед,жр,им
-ли a ПРИЧАСТИЕ од,но,нст,дст,ед,жр,рд
-лй a ПРИЧАСТИЕ од,но,нст,дст,ед,жр,дт
-лк a ПРИЧАСТИЕ од,но,нст,дст,ед,жр,вн
-лл a ПРИЧАСТИЕ од,но,нст,дст,ед,жр,тв
-лм a ПРИЧАСТИЕ од,но,нст,дст,ед,жр,пр
-ло a ПРИЧАСТИЕ од,но,нст,дст,ед,ср,им
-лп a ПРИЧАСТИЕ од,но,нст,дст,ед,ср,рд
-лр a ПРИЧАСТИЕ од,но,нст,дст,ед,ср,дт
-лс a ПРИЧАСТИЕ од,но,нст,дст,ед,ср,вн
-лт a ПРИЧАСТИЕ од,но,нст,дст,ед,ср,тв
-лу a ПРИЧАСТИЕ од,но,нст,дст,ед,ср,пр
-лх a ПРИЧАСТИЕ од,но,нст,дст,мн,им
-лц a ПРИЧАСТИЕ од,но,нст,дст,мн,рд
-лч a ПРИЧАСТИЕ од,но,нст,дст,мн,дт
-лш a ПРИЧАСТИЕ од,нст,дст,мн,вн
-Лй a ПРИЧАСТИЕ но,нст,дст,мн,вн
-лщ a ПРИЧАСТИЕ од,но,нст,дст,мн,тв
-лы a ПРИЧАСТИЕ од,но,нст,дст,мн,пр
-
-//  действительное причастие прошедшего времени
-ма a ПРИЧАСТИЕ од,но,прш,дст,ед,мр,им
-мб a ПРИЧАСТИЕ од,но,прш,дст,ед,мр,рд
-мв a ПРИЧАСТИЕ од,но,прш,дст,ед,мр,дт
-мг a ПРИЧАСТИЕ од,прш,дст,ед,мр,вн
-Лб a ПРИЧАСТИЕ но,прш,дст,ед,мр,вн
-мд a ПРИЧАСТИЕ од,но,прш,дст,ед,мр,тв
-ме a ПРИЧАСТИЕ од,но,прш,дст,ед,мр,пр
-мз a ПРИЧАСТИЕ од,но,прш,дст,ед,жр,им
-ми a ПРИЧАСТИЕ од,но,прш,дст,ед,жр,рд
-мй a ПРИЧАСТИЕ од,но,прш,дст,ед,жр,дт
-мк a ПРИЧАСТИЕ од,но,прш,дст,ед,жр,вн
-мл a ПРИЧАСТИЕ од,но,прш,дст,ед,жр,тв
-мм a ПРИЧАСТИЕ од,но,прш,дст,ед,жр,пр
-мо a ПРИЧАСТИЕ од,но,прш,дст,ед,ср,им
-мп a ПРИЧАСТИЕ од,но,прш,дст,ед,ср,рд
-мр a ПРИЧАСТИЕ од,но,прш,дст,ед,ср,дт
-мс a ПРИЧАСТИЕ од,но,прш,дст,ед,ср,вн
-мт a ПРИЧАСТИЕ од,но,прш,дст,ед,ср,тв
-му a ПРИЧАСТИЕ од,но,прш,дст,ед,ср,пр
-мх a ПРИЧАСТИЕ од,но,прш,дст,мн,им
-мц a ПРИЧАСТИЕ од,но,прш,дст,мн,рд
-мч a ПРИЧАСТИЕ од,но,прш,дст,мн,дт
-мш a ПРИЧАСТИЕ од,прш,дст,мн,вн
-Лк a ПРИЧАСТИЕ но,прш,дст,мн,вн
-мщ a ПРИЧАСТИЕ од,но,прш,дст,мн,тв
-мы a ПРИЧАСТИЕ од,но,прш,дст,мн,пр
-
-//  страдательное причастие настоящего времени
-па b ПРИЧАСТИЕ од,но,нст,стр,ед,мр,им
-пб b ПРИЧАСТИЕ од,но,нст,стр,ед,мр,рд
-пв b ПРИЧАСТИЕ од,но,нст,стр,ед,мр,дт
-пг b ПРИЧАСТИЕ од,нст,стр,ед,мр,вн
-Лг b ПРИЧАСТИЕ но,нст,стр,ед,мр,вн
-пд b ПРИЧАСТИЕ од,но,нст,стр,ед,мр,тв
-пе b ПРИЧАСТИЕ од,но,нст,стр,ед,мр,пр
-пж b КР_ПРИЧАСТИЕ од,но,нст,стр,ед,мр
-пз b ПРИЧАСТИЕ од,но,нст,стр,ед,жр,им
-пи b ПРИЧАСТИЕ од,но,нст,стр,ед,жр,рд
-пй b ПРИЧАСТИЕ од,но,нст,стр,ед,жр,дт
-пк b ПРИЧАСТИЕ од,но,нст,стр,ед,жр,вн
-пл b ПРИЧАСТИЕ од,но,нст,стр,ед,жр,тв
-пм b ПРИЧАСТИЕ од,но,нст,стр,ед,жр,пр
-пн b КР_ПРИЧАСТИЕ од,но,нст,стр,ед,жр
-по b ПРИЧАСТИЕ од,но,нст,стр,ед,ср,им
-пп b ПРИЧАСТИЕ од,но,нст,стр,ед,ср,рд
-пр b ПРИЧАСТИЕ од,но,нст,стр,ед,ср,дт
-пс b ПРИЧАСТИЕ од,но,нст,стр,ед,ср,вн
-пт b ПРИЧАСТИЕ од,но,нст,стр,ед,ср,тв
-пу b ПРИЧАСТИЕ од,но,нст,стр,ед,ср,пр
-пф b КР_ПРИЧАСТИЕ од,но,нст,стр,ед,ср
-пх b ПРИЧАСТИЕ од,но,нст,стр,мн,им
-пц b ПРИЧАСТИЕ од,но,нст,стр,мн,рд
-пч b ПРИЧАСТИЕ од,но,нст,стр,мн,дт
-пш b ПРИЧАСТИЕ од,нст,стр,мн,вн
-Лм b ПРИЧАСТИЕ но,нст,стр,мн,вн
-пщ b ПРИЧАСТИЕ од,но,нст,стр,мн,тв
-пы b ПРИЧАСТИЕ од,но,нст,стр,мн,пр
-пэ b КР_ПРИЧАСТИЕ од,но,нст,стр,мн
-
-//  страдательное причастие прошедшего времени
-са b ПРИЧАСТИЕ од,но,прш,стр,ед,мр,им
-сб b ПРИЧАСТИЕ од,но,прш,стр,ед,мр,рд
-св b ПРИЧАСТИЕ од,но,прш,стр,ед,мр,дт
-сг b ПРИЧАСТИЕ од,прш,стр,ед,мр,вн
-Ле b ПРИЧАСТИЕ но,прш,стр,ед,мр,вн
-сд b ПРИЧАСТИЕ од,но,прш,стр,ед,мр,тв
-се b ПРИЧАСТИЕ од,но,прш,стр,ед,мр,пр
-сж b КР_ПРИЧАСТИЕ од,но,прш,стр,ед,мр
-сз b ПРИЧАСТИЕ од,но,прш,стр,ед,жр,им
-си b ПРИЧАСТИЕ од,но,прш,стр,ед,жр,рд
-сй b ПРИЧАСТИЕ од,но,прш,стр,ед,жр,дт
-ск b ПРИЧАСТИЕ од,но,прш,стр,ед,жр,вн
-сл b ПРИЧАСТИЕ од,но,прш,стр,ед,жр,тв
-см b ПРИЧАСТИЕ од,но,прш,стр,ед,жр,пр
-сн b КР_ПРИЧАСТИЕ од,но,прш,стр,ед,жр
-со b ПРИЧАСТИЕ од,но,прш,стр,ед,ср,им
-сп b ПРИЧАСТИЕ од,но,прш,стр,ед,ср,рд
-ср b ПРИЧАСТИЕ од,но,прш,стр,ед,ср,дт
-сс b ПРИЧАСТИЕ од,но,прш,стр,ед,ср,вн
-ст b ПРИЧАСТИЕ од,но,прш,стр,ед,ср,тв
-су b ПРИЧАСТИЕ од,но,прш,стр,ед,ср,пр
-сф b КР_ПРИЧАСТИЕ од,но,прш,стр,ед,ср
-сх b ПРИЧАСТИЕ од,но,прш,стр,мн,им
-сц b ПРИЧАСТИЕ од,но,прш,стр,мн,рд
-сч b ПРИЧАСТИЕ од,но,прш,стр,мн,дт
-сш b ПРИЧАСТИЕ од,прш,стр,мн,вн
-Ло b ПРИЧАСТИЕ но,прш,стр,мн,вн
-сщ b ПРИЧАСТИЕ од,но,прш,стр,мн,тв
-сы b ПРИЧАСТИЕ од,но,прш,стр,мн,пр
-сэ b КР_ПРИЧАСТИЕ од,но,прш,стр,мн
-
-
-ча e МС 1л,ед,им
-чб e МС 1л,ед,рд
-чв e МС 1л,ед,дт
-чг e МС 1л,ед,вн
-чд e МС 1л,ед,тв
-че e МС 1л,ед,пр
-чж e МС 1л,мн,им
-чз e МС 1л,мн,рд
-чи e МС 1л,мн,дт
-чй e МС 1л,мн,вн
-чк e МС 1л,мн,тв
-чл e МС 1л,мн,пр
-чм e МС 2л,ед,им
-чн e МС 2л,ед,рд
-чо e МС 2л,ед,дт
-чп e МС 2л,ед,вн
-чр e МС 2л,ед,тв
-чс e МС 2л,ед,пр
-чт e МС 2л,мн,им
-чу e МС 2л,мн,рд
-чф e МС 2л,мн,дт
-чх e МС 2л,мн,вн
-чц e МС 2л,мн,тв
-чч e МС 2л,мн,пр
-ша e МС 3л,мр,ед,им
-шб e МС 3л,мр,ед,рд
-шв e МС 3л,мр,ед,дт
-шг e МС 3л,мр,ед,вн
-шд e МС 3л,мр,ед,тв
-ше e МС 3л,мр,ед,пр
-шж e МС 3л,жр,ед,им
-шз e МС 3л,жр,ед,рд
-ши e МС 3л,жр,ед,дт
-шй e МС 3л,жр,ед,вн
-шк e МС 3л,жр,ед,тв
-шл e МС 3л,жр,ед,пр
-шм e МС 3л,ср,ед,им
-шн e МС 3л,ср,ед,рд
-шо e МС 3л,ср,ед,дт
-шп e МС 3л,ср,ед,вн
-шр e МС 3л,ср,ед,тв
-шс e МС 3л,ср,ед,пр
-шт e МС 3л,мн,им
-шу e МС 3л,мн,рд
-шф e МС 3л,мн,дт
-шх e МС 3л,мн,вн
-шц e МС 3л,мн,тв
-шч e МС 3л,мн,пр
-ща e МС мр,ед,им
-щб e МС мр,ед,рд
-щв e МС мр,ед,дт
-щг e МС мр,ед,вн
-щд e МС мр,ед,тв
-ще e МС мр,ед,пр
-щж e МС жр,ед,им
-щз e МС жр,ед,рд
-щи e МС жр,ед,дт
-щй e МС жр,ед,вн
-щк e МС жр,ед,тв
-щл e МС жр,ед,пр
-щм e МС ср,ед,им
-щн e МС ср,ед,рд
-що e МС ср,ед,дт
-щп e МС ср,ед,вн
-щр e МС ср,ед,тв
-щс e МС ср,ед,пр
-щт e МС мн,им
-щу e МС мн,рд
-щф e МС мн,дт
-щх e МС мн,вн
-щц e МС мн,тв
-щч e МС мн,пр
-щщ e МС рд
-щы e МС дт
-щэ e МС вн
-щю e МС тв
-щя e МС пр
-ыа f МС-П мр,ед,им,од,но
-ыб f МС-П мр,ед,рд,од,но
-ыв f МС-П мр,ед,дт,од,но
-ыг f МС-П мр,ед,вн,но
-Лф f МС-П мр,ед,вн,од
-ыд f МС-П мр,ед,тв,од,но
-ые f МС-П мр,ед,пр,од,но
-ыж f МС-П жр,ед,им,од,но
-ыз f МС-П жр,ед,рд,од,но
-ыи f МС-П жр,ед,дт,од,но
-ый f МС-П жр,ед,вн,од,но
-ык f МС-П жр,ед,тв,од,но
-ыл f МС-П жр,ед,пр,од,но
-ым f МС-П ср,ед,им,од,но
-ын f МС-П ср,ед,рд,од,но
-ыо f МС-П ср,ед,дт,од,но
-ып f МС-П ср,ед,вн,од,но
-ыр f МС-П ср,ед,тв,од,но
-ыс f МС-П ср,ед,пр,од,но
-ыт f МС-П мн,им,од,но
-ыу f МС-П мн,рд,од,но
-ыф f МС-П мн,дт,од,но
-ых f МС-П мн,вн,но
-Лх f МС-П мн,вн,од
-ыц f МС-П мн,тв,од,но
-ыч f МС-П мн,пр,од,но
-ыш f МС-П 0,од,но
-ыщ g МС-ПРЕДК ед,рд
-ыы g МС-ПРЕДК ед,дт
-ыэ g МС-ПРЕДК ед,вн
-ыю g МС-ПРЕДК ед,тв
-
-// это анал. форма "не о  ком"
-ыь g МС-ПРЕДК ед,пр
-
-ыя g МС-ПРЕДК
-эа h ЧИСЛ им
-эб h ЧИСЛ рд
-эв h ЧИСЛ дт
-эг h ЧИСЛ вн
-эд h ЧИСЛ тв
-эе h ЧИСЛ пр
-
-Ца h ЧИСЛ им,арх
-Цб h ЧИСЛ рд,арх
-Цв h ЧИСЛ дт,арх
-Цг h ЧИСЛ вн,арх
-Цд h ЧИСЛ тв,арх
-Це h ЧИСЛ пр,арх
-
-
-эж h ЧИСЛ мр,им
-эз h ЧИСЛ мр,рд
-эи h ЧИСЛ мр,дт
-эй h ЧИСЛ мр,вн
-эк h ЧИСЛ мр,тв
-эл h ЧИСЛ мр,пр
-эм h ЧИСЛ жр,им
-эн h ЧИСЛ жр,рд
-эо h ЧИСЛ жр,дт
-эп h ЧИСЛ жр,вн
-эр h ЧИСЛ жр,тв
-эс h ЧИСЛ жр,пр
-эт h ЧИСЛ ср,им
-эу h ЧИСЛ ср,рд
-эф h ЧИСЛ ср,дт
-эх h ЧИСЛ ср,вн
-эц h ЧИСЛ ср,тв
-эч h ЧИСЛ ср,пр
-эш h ЧИСЛ сравн
-юа i ЧИСЛ-П мр,ед,им,од,но
-юб i ЧИСЛ-П мр,ед,рд,од,но
-юв i ЧИСЛ-П мр,ед,дт,од,но
-юг i ЧИСЛ-П мр,ед,вн,но
-Лт i ЧИСЛ-П мр,ед,вн,од
-юд i ЧИСЛ-П мр,ед,тв,од,но
-юе i ЧИСЛ-П мр,ед,пр,од,но
-юж i ЧИСЛ-П жр,ед,им,од,но
-юз i ЧИСЛ-П жр,ед,рд,од,но
-юи i ЧИСЛ-П жр,ед,дт,од,но
-юй i ЧИСЛ-П жр,ед,вн,од,но
-юк i ЧИСЛ-П жр,ед,тв,од,но
-юл i ЧИСЛ-П жр,ед,пр,од,но
-юм i ЧИСЛ-П ср,ед,им,од,но
-юн i ЧИСЛ-П ср,ед,рд,од,но
-юо i ЧИСЛ-П ср,ед,дт,од,но
-юп i ЧИСЛ-П ср,ед,вн,од,но
-юр i ЧИСЛ-П ср,ед,тв,од,но
-юс i ЧИСЛ-П ср,ед,пр,од,но
-ют i ЧИСЛ-П мн,им,од,но
-юу i ЧИСЛ-П мн,рд,од,но
-юф i ЧИСЛ-П мн,дт,од,но
-юх i ЧИСЛ-П мн,вн,но
-Лу i ЧИСЛ-П мн,вн,од
-юц i ЧИСЛ-П мн,тв,од,но
-юч i ЧИСЛ-П мн,пр,од,но
-ющ i ЧИСЛ-П рд,од,но
-
-//  наречия
-яа j Н
-ян j Н вопр
-яо j Н указат
-яп j Н разг
-
-// "мне интересно","мне было страшно"
-яб k ПРЕДК нст
-як k ПРЕДК прш
-ял k ПРЕДК 
-// мне лучше
-яр k ПРЕДК сравн,нст
-
-//  "вот", "хрусть" (нет анал. форм)
-ям k ПРЕДК 0
-
-яв l ПРЕДЛ
-яг m ПОСЛ
-яд n СОЮЗ
-яе o МЕЖД
-яё o МЕЖД разг
-яж p ЧАСТ
-яз q ВВОДН
-яй s ФРАЗ
-Пп b Г стр,буд,1л,ед
-Пр b Г стр,буд,1л,мн
-Пс b Г стр,буд,2л,ед
-Пт b Г стр,буд,2л,мн
-Пу b Г стр,буд,3л,ед
-Пф b Г стр,буд,3л,мн
-
-
-
-
-// общие граммемы (словообразовательные)
-Уа a * лок
-// Уб a * 
-// Ув a * 
-// Уг a * 
-// Уд a * 
-Уе a * кач
-Уж a * дфст
-Уз a * дфст,орг
-Уи a * дфст,лок
-//Ук a * 
-Ул a * св,пе
-Ум a * св,нп
-Ун a * нс,пе
-Уо a * нс,нп
-Уп a * св,нс,пе
-Ур a * св,нс,нп
-
-
-// для безличных глаголов
-Ус a * нс
-Ут a * св
-
-Уф a * жарг
-Ух a * опч
-Уч a * жарг,опч
-Уц a * орг,жарг
-Уш a * лок,жарг
-
-Ущ a * но,лок
-Уь a * но,орг
-Уы a * од,фам
-Уъ a * но,дфст,лок
-Уэ a * но,дфст,орг
-Ую a * но,жарг
-Уя a * но,опч,
-Фа a * но,
-Фб a * од,
-Фв a * орг,жарг,но
-Фг a * дфст,но
-Фд a * дфст,од
-Фж a * од,жарг
-Фз a * имя,притяж
-Фи a * притяж
-Фк a * св,пе,разг
-Фл a * св,нп,разг
-Фн a * нс,пе,разг
-Фо a * нс,нп,разг
-Фп a * но,разг
-Фр a * од,разг
-Фс a * св,пе,жарг
-Фт a * св,нп,жарг
-Фу a * нс,пе,жарг
-Фф a * нс,нп,жарг
-Фх a * разг
-Фц a * арх
-Фч a * св,пе,арх
-Фш a * св,нп,арх
-Фщ a * нс,пе,арх
-Фь a * нс,нп,арх
-Фы a * но,арх
-Фъ a * од,арх
-Фэ a * нс,арх
-Фю a * св,арх
-Фя a * кач,арх
-Фё a * но,од
-Ха a * од,опч,
-Хб a * лок,опч,
-
-
-
-яю F С мр,жр,ср,ед,им,рд,дт,вн,тв,пр
-яя F С мр,жр,ср,,ед,мн,им,рд,дт,вн,тв,пр
+-- luacheck: globals const global declare
+
+local declarations = {}
+local variables = {}
+local std = stead
+
+local type = std.type
+local rawget = std.rawget
+local rawset = std.rawset
+local pairs = std.pairs
+local table = std.table
+local next = std.next
+
+local function __declare_one(k, v, t)
+	local link
+
+	if type(k) ~= 'string' then -- k:find("^[a-zA-Z_][a-zA-Z0-9_]*$") then
+		std.err ("Wrong declaration name: "..k, 3)
+	end
+	if declarations[k] then
+		std.err ("Duplicate declaration: "..k, 3)
+	end
+
+	link = rawget(_G, k)
+
+	declarations[k] = { value = v, type = t, link = link }
+
+	if link and v ~= link then
+		std.err("Overwite global declaration: "..std.tostr(k), 3)
+	end
+
+	if t == 'global' then
+		if type(v) == 'function' and not std.functions[v] then
+			std.err("Use declare to declare function: "..k, 3)
+		end
+		rawset(_G, k, v)
+		variables[k] = true
+	end
+	if type(v) == 'function' and not std.functions[v] then
+		std.functions[v] = k
+	end
+	if std.__in_init and std.is_obj(v, 'list') then
+		table.insert(v.__in_init, v)
+	end
+end
+
+local function __declare(n, t)
+	if stead.game then
+		std.err ("Use "..t.." only in global context", 2)
+	end
+	if type(n) == 'string' then
+		return function(v)
+			if v == nil then
+				v = false
+--				std.err("Wrong declaration: "..std.tostr(t), 2)
+			end
+			__declare_one(n, v, t)
+		end
+	end
+	if type(n) ~= 'table' then
+		std.err ("Wrong parameter to "..n, 2)
+	end
+	for k, v in std.pairs(n) do
+		__declare_one(k, v, t)
+	end
+	return n
+end
+
+function std.const(n)
+	return __declare(n, 'const')
+end
+
+function std.global(n)
+	return __declare(n, 'global')
+
+end
+
+function std.declare(n)
+	return __declare(n, 'declare')
+end
+
+local function do_depends(t, tables, deps)
+	if type(t) ~= 'table' then return end
+	if tables[t] then
+		deps[t] = tables[t]
+	end
+	for _, v in pairs(t) do
+		if type(v) == 'table' and not std.getmt(v) then
+			do_depends(v, tables, deps)
+		end
+	end
+end
+
+local function makedeps(nam, depends, deps)
+	local ndeps = {}
+	local rc = false
+
+	local t = rawget(_G, nam)
+	if type(t) ~= 'table' then
+		return
+	end
+	if type(depends[nam]) ~= 'table' then
+		return
+	end
+	local d = depends[nam]
+	for k, v in pairs(d) do
+		local dd = depends[v]
+		if dd and k ~= t then
+			ndeps[k] = v
+			rc = rc or makedeps(v, depends, deps)
+		end
+	end
+	if not next(ndeps) then
+		depends[nam] = nil
+		table.insert(deps, t)
+		rc = true
+	else
+		depends[nam] = ndeps
+	end
+	return rc
+end
+
+local function mod_save(fp)
+	-- save global variables
+	std.tables = {}
+	local tables = {}
+	local deps = {}
+	for k, v in pairs(declarations) do -- name all table variables
+		local o = rawget(_G, k) or v.value
+		if type(o) == 'table' then
+			if not tables[o] then
+				tables[o] = k
+			end
+		end
+	end
+
+	for k, _ in pairs(variables) do
+		local d = {}
+		local o = rawget(_G, k)
+		do_depends(o, tables, d)
+		if k == tables[o] then -- self depend
+			d[o] = nil
+		end
+		if next(d) then
+			deps[k] = d
+		end
+	end
+
+	std.tables = tables -- save all depends
+
+	for k, _ in pairs(variables) do -- write w/o deps
+		local o = rawget(_G, k)
+		if not deps[k] then
+			std.save_var(o, fp, k)
+		end
+	end
+	for k, _ in pairs(variables) do
+		local d = {}
+		while makedeps(k, deps, d) do
+			for i=1, #d do
+				std.save_var(d[i], fp, k)
+			end
+			d = {}
+		end
+	end
+end
+
+local function mod_init()
+	std.setmt(_G, {
+	__index = function(_, n)
+		local d = declarations[n]
+		if d then --
+			if std.game and (d.type ~= 'const') then
+				rawset(_, n, d.value)
+			end
+			return d.value
+		end
+		local f = std.getinfo(2, "S").source
+		std.err ("Uninitialized global variable: "..n.." in "..f, 2)
+	end;
+	__newindex = function(t, k, v)
+		if not std.game and std.is_obj(v) then -- autodeclare objects
+			__declare_one(k, v, 'declare')
+		end
+		local d = declarations[k]
+		if d then
+			if v == d.value then
+				return --nothing todo
+			end
+			if not std.game then
+				d.value = v
+				return
+			end
+			if d.type == 'const' then
+				std.err ("Modify read-only constant: "..k, 2)
+			else
+				d.value = v
+				rawset(t, k, v)
+			end
+			return
+		end
+		if std.game or type(v) ~= 'function' then
+			local f = std.getinfo(2, "S").source
+			if f ~= '=[C]' then
+				std.err ("Set uninitialized variable: "..k.." in "..f, 2)
+			end
+		end
+		rawset(t, k, v)
+	end
+	})
+end
+
+std.obj {
+	nam = '@declare';
+	ini = function(_, ...)
+-- init all list objs
+		for _, v in pairs(declarations) do
+			if std.is_obj(v.value, 'list') then
+				v.value:__ini(...)
+			end
+		end
+	end;
+	declarations = function()
+		return declarations;
+	end;
+	variables = function()
+		return variables
+	end;
+}
+
+local function mod_done()
+	std.setmt(_G, {})
+	local decl = {}
+	for k, v in pairs(declarations) do
+		local o = std.rawget(_G, k) or v.value
+		if std.is_system(o) then -- save system declarations
+			decl[k] = v
+		elseif not v.link then
+			rawset(_G, k, nil)
+		end
+	end
+	std.tables = {}
+	std.functions = {}
+	declarations = decl
+	variables = {}
+end
+
+std.mod_init(mod_init)
+std.mod_done(mod_done)
+std.mod_save(mod_save)
+
+const = std.const
+global = std.global
+declare = std.declare
+-- luacheck: globals prefs
+
+local std = stead
+
+local preferences = std.obj {
+	nam = '@prefs',
+	load = function(_)
+		local name = std.savepath() .. '/prefs';
+		local f, err = std.loadfile(name);
+		if not f then
+			return false, err
+		end
+		local strict = std.nostrict; std.nostrict = true
+		f();
+		std.nostrict = strict
+		return true
+	end,
+	store = function(s)
+		return s:save()
+	end,
+	save = function(s) -- save prefs on every save
+		local name = std.savepath() .. '/prefs';
+		local name_tmp = name..'.tmp'
+		local fp, _ = std.io.open(name_tmp, "wb");
+		if not fp then
+			return false
+		end
+		std.obj.save(s, fp, 'std "@prefs"')
+		fp:flush();
+		fp:close();
+		std.os.remove(name)
+		return std.os.rename(name_tmp, name);
+	end,
+	purge = function(_)
+		local name = std.savepath() .. '/prefs';
+		return std.os.remove(name);
+	end
+};
+
+local loaded
+
+std.mod_start(function()
+	loaded = prefs:load()
+end)
+
+std.mod_done(function()
+	if loaded then
+		prefs:store()
+		loaded = false
+	end
+end)
+
+prefs = preferences
+-- luacheck: globals timer
+timer = stead.ref '@timer'
+local std = stead
+local type = std.type
+local iface = std.ref '@iface'
+
+-- luacheck: globals fmt
+
+fmt = std.obj {
+	nam = '@format';
+	para = false;
+	nopara = '_';
+	para_space = '    ';
+	quotes = true;
+	dash = true;
+	filter = nil;
+}
+
+std.obj {
+	nam = '$fmt';
+	act = function(_, w, ...)
+		if type(w) ~= 'string' or not fmt[w] then
+			return w
+		end
+		return fmt[w](...)
+	end
+}
+
+std.format = function(r, state)
+	local utf8 = (std.ref 'game'.codepage == 'UTF-8' or std.ref 'game'.codepage == 'utf-8')
+
+	if type(r) ~= 'string' then
+		return r
+	end
+
+	if type(fmt.filter) == 'function' then
+		r = fmt.filter(r, state)
+	end
+
+	if utf8 then
+		if fmt.dash then
+			r = r:gsub("%-%-%-*", { ['--'] = '—' })
+			r = r:gsub("[ \t]+—", iface:nb('').."—"); -- do not break dash
+			r = r:gsub("^([^ \t]*)—[ \t]+", "%1— ");
+			r = r:gsub("(\n[^ \t]*)—[ \t]+", "%1— ");
+		end
+		if fmt.quotes then
+			r = r:gsub('_"','«'):gsub('"_',"»");
+			r = r:gsub('"([^"]*)"','«%1»');
+			r = r:gsub(',,','„'):gsub("''",'”');
+		end
+	end
+	if not state then
+		return r
+	end
+
+	if fmt.para then
+		r = r:gsub('\n([^\n])', '\001%1'):gsub('\001[ \t]*'..fmt.nopara,'\n'):
+			gsub('\001[ \t]*', '\n'..iface:nb(fmt.para_space));
+		r = r:gsub('^[ \t]*', '\001'):gsub('\001[ \t]*'..fmt.nopara,''):
+			gsub('\001[ \t]*', iface:nb(fmt.para_space));
+	end
+	return r
+end
+
+function fmt.em(str)
+	return iface:em(str)
+end
+
+function fmt.c(str)
+	return iface:center(str)
+end
+
+function fmt.j(str)
+	return iface:just(str)
+end
+
+function fmt.l(str)
+	return iface:left(str)
+end
+
+function fmt.r(str)
+	return iface:right(str)
+end
+
+function fmt.b(str)
+	return iface:bold(str)
+end
+
+function fmt.top(str)
+	return iface:top(str)
+end
+
+function fmt.bottom(str)
+	return iface:bottom(str)
+end
+
+function fmt.middle(str)
+	return iface:middle(str)
+end
+
+function fmt.nb(str)
+	return iface:nb(str)
+end
+
+function fmt.anchor(str)
+	return iface:anchor(str)
+end
+
+function fmt.img(str)
+	return iface:img(str)
+end
+
+function fmt.imgl(str)
+	return iface:imgl(str)
+end
+
+function fmt.imgr(str)
+	return iface:imgr(str)
+end
+
+function fmt.u(str)
+	return iface:under(str)
+end
+
+function fmt.st(str)
+	return iface:st(str)
+end
+
+function fmt.tab(str, al)
+	return iface:tab(str, al)
+end
+
+function fmt.y(str, al)
+	return iface:y(str, al)
+end
+-- luacheck: globals theme
+theme = stead.ref '@theme'
+local std = stead
+
+std.mod_step(function(state)
+	if not state then
+		return
+	end
+	if std.here().nolife and std.game:live() then
+		std.game:lifeoff()
+	elseif not std.game:live() and not std.here().nolife then
+		std.game:lifeon()
+	end
+end)
+
+std.mod_done(function()
+	if not std.game:live() then
+		std.game:lifeon()
+	end
+end)
+local std = stead
+local input = std.ref '@input'
+local instead = std.ref '@instead'
+
+-- luacheck: no self
+function input:event(...)
+-- luacheck: self
+	local a
+	for _, v in std.ipairs {...} do
+		a = (a and (a..', ') or ' ') .. std.dump(v)
+	end
+	return '@user_event'.. a or ''
+end
+
+std.mod_cmd(function(cmd)
+	if cmd[1] ~= '@user_event' then
+		return
+	end
+	local r, v =  std.call(instead, 'onevent', cmd[2])
+	if not r and not v then -- nothing todo
+		return nil, false
+	end
+	return r, v
+end)
+-- luacheck: globals snd
+snd = stead.ref '@snd'local std = stead
+
+std.mod_step(function(state)
+	if not state then
+		return
+	end
+	if std.here().noinv and not std.me().__inv_disabled then
+		std.me():close()
+		std.me().__inv_disabled = true
+	elseif std.me().__inv_disabled and not std.here().noinv then
+		std.me():open()
+		std.me().__inv_disabled = nil
+	end
+end)
+
+std.mod_done(function()
+	if std.me().__inv_disabled then
+		std.me():open()
+		std.me().__inv_disabled = nil
+	end
+end)
+-- luacheck: globals snapshots
+
+local std = stead
+
+local SNAPSHOT = false
+local INWRITE = false
+
+local snap = std.obj {
+	nam = '@snapshots';
+	data = {};
+	save = function(s, ...)
+		if INWRITE then return end
+		return std.obj.save(s, ...)
+	end;
+	write = function(s, name)
+		name = name or 'default'
+		local fp = { -- fake file object
+			data = '';
+			write = function(self, str)
+				self.data = self.data .. str
+			end;
+		}
+		INWRITE = true std:save(fp) INWRITE = false
+		s.data[name] = fp.data
+	end;
+	make = function(_, name)
+		SNAPSHOT = name or 'default'
+	end;
+	exists = function(s, name)
+		name = name or 'default'
+		return s.data[name]
+	end;
+	remove = function(s, name)
+		name = name or 'default'
+		s.data[name] = nil
+	end;
+	restore = function(s, name) -- like std:load()
+		name = name or 'default'
+		if not s:exists(name) then
+			return false
+		end
+		std:reset()
+		std.ref 'game':__ini()
+		local f, err = std.eval(s.data[name])
+		if not f then
+			std.err(err, 2)
+		end
+		f();
+		std.ref 'game':__ini()
+		std.ref 'game':__start(true)
+		return std.nop()
+	end;
+}
+
+snapshots = snap
+
+std.mod_cmd(function()
+	if SNAPSHOT then
+		snap:write(SNAPSHOT)
+		SNAPSHOT = nil
+	end
+end)
+
+-- std.mod_done(function()
+-- end)
+local std = stead
+local instead = std.ref '@instead'
+-- luacheck: read globals instead_savepath
+-- luacheck: read globals instead_gamepath
+-- luacheck: read globals instead_exepath
+-- luacheck: globals io
+instead.savepath = instead_savepath
+std.savepath = instead_savepath
+instead.gamepath = instead_gamepath
+instead.exepath = instead_exepath
+
+io.open = stead.hook(io.open, function(f, path, acc, ...)
+	if std.type(path) == 'string' and path:sub(1, 1) ~= '/' and not
+		(path:sub(2, 2) == ':' and path:find("^[A-Z]", 1) == 1) then
+		path = instead.gamepath()..'/'..path
+	end
+	return f(path, acc, ...)
+end)
+This code uses dictionary files from the http://aot.ru project that is
+covered by the terms of the LGPL license.
+
+Dictionary files:
+https://sourceforge.net/p/seman/svn/HEAD/tree/trunk/Dicts/Morph/Russian/
+
+License:
+https://sourceforge.net/p/seman/svn/HEAD/tree/trunk/copying
 --luacheck: no self
 
 local curdir = std.getinfo(1).source:gsub("^(.+[\\/])[^\\/]+$", "%1"):gsub("^@", "");
@@ -5945,12 +5097,12 @@ function mrd:load(path, dict)
 	self.words_nr = 0
 	self.words = {}
 	self.words_list = {}
-	collectgarbage("stop")
+--	collectgarbage("stop")
 	if not section(f, word_fn, self, dict) then
-		collectgarbage("restart")
+--		collectgarbage("restart")
 		return false, "Error in section 4"
 	end
-	collectgarbage("restart")
+--	collectgarbage("restart")
 	msg("Generated: "..tostring(self.words_nr).." word(s)");
 	local crc = f:read("*line")
 	if crc then crc = tonumber(crc) end
@@ -7128,18 +6280,26 @@ lang = { yo = false,
 		["ведро/ср,но,С"] = {
 			"ведро/им", "вёдра/им,мн",
 			"ведро/вн", "вёдра/вн,мн",
-			"ведро/рд", "вёдра/рд,мн",
+			"ведра/рд", "вёдер/рд,мн",
 			"ведру/дт", "ведрам/дт,мн",
 			"ведром/тв", "вёдрами/тв,мн",
 			"ведре/пр", "вёдрах/пр,мн",
 		},
-		["деревья/жр,но,мн,С"] = {
+		["деревья/ср,но,мн,С"] = {
 			"деревья/им";
 			"деревья/вн";
 			"деревьев/рд";
 			"деревьями/тв";
 			"деревьях/пр";
 			"деревьям/дт";
+		};
+		["дерево/ср,но,С"] = {
+			"дерево/им", "деревья/им,мн";
+			"дерево/вн", "деревья/вн,мн";
+			"дерева/рд", "деревьев/рд,мн";
+			"деревом/тв", "деревьями/тв,мн";
+			"дереве/пр", "деревьях/пр,мн";
+			"дереву/пр", "деревьям/дт,мн";
 		};
 		["огонь/мр,но,С"] = {
 			"огонь/им", "огни/им,мн",
@@ -7151,7 +6311,7 @@ lang = { yo = false,
 		};
 		["цветы/мн,мр,но,С"] = { -- цветки
 			"цветы/им",
-			"уветы/вн",
+			"цветы/вн",
 			"цветов/рд",
 			"цветам/дт",
 			"цветами/тв",
@@ -7164,1218 +6324,884 @@ lang = { yo = false,
 }
 
 return lang
-This code uses dictionary files from the http://aot.ru project that is
-covered by the terms of the LGPL license.
-
-Dictionary files:
-https://sourceforge.net/p/seman/svn/HEAD/tree/trunk/Dicts/Morph/Russian/
-
-License:
-https://sourceforge.net/p/seman/svn/HEAD/tree/trunk/copying
-local std = stead
-local instead = std.ref '@instead'
--- luacheck: read globals instead_savepath
--- luacheck: read globals instead_gamepath
--- luacheck: read globals instead_exepath
--- luacheck: globals io
-instead.savepath = instead_savepath
-std.savepath = instead_savepath
-instead.gamepath = instead_gamepath
-instead.exepath = instead_exepath
-
-io.open = stead.hook(io.open, function(f, path, acc, ...)
-	if std.type(path) == 'string' and path:sub(1, 1) ~= '/' and not
-		(path:sub(2, 2) == ':' and path:find("^[A-Z]", 1) == 1) then
-		path = instead.gamepath()..'/'..path
-	end
-	return f(path, acc, ...)
-end)
---luacheck: no self
-local lang = require "morph/lang-ru"
-require "parser/mp"
-require "parser/mplib"
-local mp = _'@metaparser'
-
-std.mod_init(
-	function()
-	mp:init(lang)
-end)
-game.dsc = function()
-	p ([[МЕТАПАРСЕР3 Версия: ]]..mp.version.."^")
-	p [[http://instead-hub.github.io^^
-Если вам необходима справка по игре, наберите "помощь".
-^]]
-end
--- local utf = mp.utf
-
-_'@all'.word = -"всё/~од"
-
-_'@darkness'.word = -"тьма,темнота,темень"
-_'@darkness'.before_Any = "Полная, кромешная тьма."
-_'@darkness':attr 'persist'
-
-_'@n_to'.word = -"север";
-_'@ne_to'.word = -"северо-восток";
-_'@e_to'.word = -"восток";
-_'@se_to'.word = -"юго-восток";
-_'@s_to'.word = -"юг";
-_'@sw_to'.word = -"юго-запад";
-_'@w_to'.word = -"запад";
-_'@nw_to'.word = -"северо-запад";
-_'@u_to'.word = -"наверх,вверх,верх";
-_'@d_to'.word = -"вниз,низ";
-_'@out_to'.word = -"наружу,выход,назад";
-_'@in_to'.word = -"внутрь,вход"
-
-mp.shorten = {
-	["с"] = "север";
-	["в"] = "восток";
-	["з"] = "запад";
-	["ю"] = "юг";
-	["св"] = "северо-восток";
-	["юв"] = "юго-восток";
-	["юз"] = "юго-запад";
-	["сз"] = "северо-запад";
-	["вн"] = "вниз";
-	["вв"] = "вверх";
-}
-
-mp.shorten_expert = {
-	["и"] = "инвентарь";
-	["ж"] = "ждать";
-	["о"] = "осмотреть";
-	["осм"] = "осмотреть";
-	["вкл"] = "включить";
-	["выкл"] = "выключить";
-	["см"] = "смотреть";
-}
-
-function mp:skip_filter(w)
-	for _, v in ipairs(w) do
-		if v == 'не' or v == 'кроме' or v == 'вместо' then
-			return false
-		end
-	end
-	return true
-end
-
-_'@compass'.before_Default = 'Попробуйте глагол "идти".'
-
-function mp.msg.SCORE(d)
-	if d > 0 then
-		pn ("{$fmt em|(Счёт увеличился на ", d, ")}")
-	else
-		pn ("{$fmt em|(Счёт уменьшился на ", d, ")}")
-	end
-end
-mp.door.word = -"дверь";
-mp.msg.TITLE_SCORE = "Счёт: "
-mp.msg.TITLE_TURNS = "Ходы: "
-mp.msg.YES = "Да"
-mp.msg.WHEN_DARK = "Кромешная тьма."
-mp.msg.UNKNOWN_THEDARK = "Возможно, это потому что в темноте ничего не видно?"
-mp.msg.COMPASS_NOWAY = "Этот путь недоступен."
-mp.msg.COMPASS_EXAM_NO = "В этом направлении не видно ничего примечательного."
-mp.msg.ENUM = "шт."
-mp.msg.CUTSCENE_HELP = "Для продолжения нажмите <ввод> или введите {$fmt em|дальше}."
-mp.msg.DLG_HELP = "Для выбора фразы введите цифру."
-mp.msg.NO_ALL = "Это действие нельзя применить на всё."
-mp.msg.DROPPING_ALL = function(w)
-	pn (iface:em("(бросить "..w:noun'вн'..")"))
-end
-mp.msg.TAKING_ALL = function(w)
-	pn (iface:em("(взять "..w:noun'вн'..")"))
-end
-mp.msg.TAKE_BEFORE = function(w)
-	pn (iface:em("(сначала взяв "..w:noun'вн'..")"))
-end
-mp.msg.DISROBE_BEFORE = function(w)
-	pn (iface:em("(сначала сняв "..w:noun'вн'..")"))
-end
-
-mp.msg.CLOSE_BEFORE = function(w)
-	pn (iface:em("(сначала закрыв "..w:noun'вн'..")"))
-end
-
---"находиться"
-mp.msg.SCENE = "{#Me} {#word/находиться,#me,нст} {#if_has/#here,supporter,на,в} {#here/пр,2}.";
-mp.msg.INSIDE_SCENE = "{#Me} {#word/находиться,#me,нст} {#if_has/#where,supporter,на,в} {#where/пр,2}.";
-mp.msg.TITLE_INSIDE = "{#if_has/#where,supporter,на,в} {#where/пр,2}";
-
-mp.msg.COMPASS_EXAM = function(dir, ob)
-	if dir == 'u_to' then
-		p "Вверху"
-	elseif dir == 'd_to' then
-		p "Внизу"
-	elseif dir == 'out_to' or dir == 'in_to' then
-		p "В этом направлении"
-	else
-		p "На {#first/пр,2}"
-	end
-	if ob:hint'plural' then
-		p "находятся"
-	else
-		p "находится"
-	end
-	p (ob:noun(),".")
-end
-
-mp.msg.enter = "<ввод>"
-mp.msg.EMPTY = 'Простите?'
-mp.msg.UNKNOWN_VERB = "Непонятный глагол"
-mp.msg.UNKNOWN_VERB_HINT = "Возможно, вы имели в виду"
-mp.msg.INCOMPLETE = "Нужно дополнить предложение."
-mp.msg.INCOMPLETE_NOUN = "К чему вы хотите применить команду"
-mp.msg.INCOMPLETE_SECOND_NOUN = "Уточните команду:"
-mp.msg.UNKNOWN_OBJ = function(w)
-	if not w then
-		p "Об этом предмете ничего не известно."
-	else
-		p "Об этом предмете ничего не известно "
-		p ("(",w,").")
-	end
-end
-mp.msg.NOTHING_OBJ = "Ничего подходящего нет."
-mp.msg.UNKNOWN_WORD = function(w)
-	if not w then
-		p "Фраза не распознана."
-	else
-		p "Фраза не распознана "
-		p ("(",w,"?).")
-	end
-end
-mp.msg.HINT_WORDS = "Может быть"
-mp.msg.HINT_OR = "или"
-mp.msg.HINT_AND = "и"
-mp.msg.AND = "и"
-mp.msg.MULTIPLE = "Тут есть"
-mp.msg.LIVE_ACTION = function(w)
-	p (w:It'дт'," это не понравится.")
-end
-mp.msg.NO_LIVE_ACTION = "Действие применимо только к одушевлённым объектам."
-
-mp.msg.NOTINV = function(t)
-	p (lang.cap(t:noun'вн') .. " сначала нужно взять.")
-end
---"надет"
-mp.msg.WORN = function(w)
-	local hint = w:gram().hint
-	pr (" (",mp.mrd:word('надет/' .. hint), ")")
-end
---"открыт"
-mp.msg.OPEN = function(w)
-	local hint = w:gram().hint
-	pr (" (",mp.mrd:word('открыт/' .. hint), ")")
-end
-mp.msg.EXITBEFORE = "Возможно, {#me/дт} нужно сначала {#if_has/#where,supporter,слезть с {#where/рд}.,покинуть {#where/вн}.}"
-
-mp.default_Event = "Exam"
-mp.default_Verb = "осмотреть"
-
---"доступен"
-mp.msg.ACCESS1 = "{#First} отсюда не{#word/доступен,#first}."
-mp.msg.ACCESS2 = "{#Second} отсюда не{#word/доступен,#second}."
-
-mp.msg.Look.HEREIS = "Здесь находится"
-mp.msg.Look.HEREARE = "Здесь находятся"
-mp.msg.Look.SUPPORTER = function(o)
-	p ("На ",o:noun'пр,2')
-end
-mp.msg.NOROOM = function(w)
-	if w == std.me() then
-		p ("У {#me/рд} слишком много вещей.")
-	elseif w:has'supporter' then
-		p ("На ", w:noun'пр,2', " больше нет места.")
-	else
-		p ("В ", w:noun'пр,2', " больше нет места.")
-	end
-end
---"включён"
---"выключен"
-mp.msg.Exam.SWITCHSTATE = "{#First} сейчас {#if_has/#first,on,{#word/включён,#first},{#word/выключен,#first}}."
-mp.msg.Exam.NOTHING = "ничего нет."
-mp.msg.Exam.IS = "находится"
-mp.msg.Exam.ARE = "находятся"
-mp.msg.Exam.IN = "В {#first/пр,2}"
-mp.msg.Exam.ON = "На {#first/пр,2}"
---"видеть"
-mp.msg.Exam.DEFAULT = "{#Me} не {#word/видеть,#me,нст} {#vo/{#first/пр}} ничего необычного.";
-mp.msg.Exam.SELF = "{#Me} не {#word/видеть,#me,нст} в себе ничего необычного.";
-
---"открыт"
-mp.msg.Exam.OPENED = "{#First} {#word/открыт,нст,#first}."
---"закрыт"
-mp.msg.Exam.CLOSED = "{#First} {#word/закрыт,нст,#first}."
---"находить"
-mp.msg.LookUnder.NOTHING = "{#Me} не {#word/находить,нст,#me} под {#first/тв} ничего интересного."
---"могу"
---"закрыт"
---"держать"
---"залезать"
-mp.msg.Enter.ALREADY = "{#Me} уже {#if_has/#first,supporter,на,в} {#first/пр,2}."
-mp.msg.Enter.INV = "{#Me} не {#word/могу,#me,нст} зайти в то, что {#word/держать,#me,нст} в руках."
-mp.msg.Enter.IMPOSSIBLE = "Но в/на {#first/вн} невозможно войти, встать, сесть или лечь."
-mp.msg.Enter.CLOSED = "{#First} {#word/закрыт,#first}, и {#me} не {#word/мочь,#me,нст} зайти туда."
-mp.msg.Enter.ENTERED = "{#Me} {#word/залезать,нст,#me} {#if_has/#first,supporter,на,в} {#first/вн}."
-mp.msg.Enter.DOOR_NOWHERE = "{#First} никуда не ведёт."
---"закрыт"
-mp.msg.Enter.DOOR_CLOSED = "{#First} {#word/закрыт,#first}."
-
-mp.msg.Walk.ALREADY = mp.msg.Enter.ALREADY
-mp.msg.Walk.WALK = "Но {#first} и так находится здесь."
-mp.msg.Walk.NOWHERE = "Куда именно?"
-mp.msg.Walk.INV = "Но {#first} у {#me/рд} с собой."
-
-mp.msg.Enter.EXITBEFORE = "Сначала нужно {#if_has/#where,supporter,слезть с {#where/рд}.,покинуть {#where/вн}.}"
-
-mp.msg.Exit.NOTHERE = "Но {#me} сейчас не {#if_has/#first,supporter,на,в} {#first/пр,2}."
-mp.msg.Exit.NOWHERE = "Но {#me/дт} некуда выходить."
-mp.msg.Exit.CLOSED = "Но {#first} {#word/закрыт,#first}."
-
---"покидать"
---"слезать"
-mp.msg.Exit.EXITED = "{#Me} {#if_has/#first,supporter,{#word/слезать с,#me,нст} {#first/рд},{#word/покидать,#me,нст} {#first/вн}}."
-
-mp.msg.GetOff.NOWHERE = "Но {#me/дт} не с чего слезать."
-
-mp.msg.Inv.NOTHING = "У {#me/рд} с собой ничего нет."
-mp.msg.Inv.INV = "У {#me/рд} с собой"
-
---"открывать"
-mp.msg.Open.OPEN = "{#Me} {#word/открывать,нст,#me} {#first/вн}."
-mp.msg.Open.NOTOPENABLE = "{#First/вн} невозможно открыть."
---"открыт"
-mp.msg.Open.WHENOPEN = "{#First/} уже {#word/открыт,#first}."
---"заперт"
-mp.msg.Open.WHENLOCKED = "Похоже, что {#first/} {#word/заперт,#first}."
-
---"закрывать"
-mp.msg.Close.CLOSE = "{#Me} {#word/закрывать,нст,#me} {#first/вн}."
-mp.msg.Close.NOTOPENABLE = "{#First/вн} невозможно закрыть."
---"закрыт"
-mp.msg.Close.WHENCLOSED = "{#First/} уже {#word/закрыт,#first}."
-
-mp.msg.Lock.IMPOSSIBLE = "{#First/вн} невозможно запереть."
---"заперт"
-mp.msg.Lock.LOCKED = "{#First} уже {#word/заперт,#first}."
---"закрыть"
-mp.msg.Lock.OPEN = "Сначала необходимо закрыть {#first/вн}."
---"подходит"
-mp.msg.Lock.WRONGKEY = "{#Second} не {#word/подходит,#second} к замку."
---"запирать"
-mp.msg.Lock.LOCK = "{#Me} {#word/запирать,#me,нст} {#first/вн}."
-
-mp.msg.Unlock.IMPOSSIBLE = "{#First/вн} невозможно отпереть."
---"заперт"
-mp.msg.Unlock.NOTLOCKED = "{#First} не {#word/заперт,#first}."
---"подходит"
-mp.msg.Unlock.WRONGKEY = "{#Second} не {#word/подходит,нст,#second} к замку."
---"отпирать"
-mp.msg.Unlock.UNLOCK = "{#Me} {#word/отпирать,#me,нст} {#first/вн}."
-
-mp.msg.Take.HAVE = "У {#me/вн} и так {#firstit} уже есть."
-mp.msg.Take.TAKE = "{#Me} {#verb/take} {#first/вн}."
-mp.msg.Take.SELF = "{#Me} есть у {#me/рд}."
---"находиться"
-mp.msg.Take.WHERE = "Нельзя взять то, в/на чём {#me} {#word/находиться,#me}."
-
-mp.msg.Take.LIFE = "{#First/дт} это вряд ли понравится."
---"закреплён"
-mp.msg.Take.STATIC = "{#First} жестко {#word/закреплён,#first}."
-mp.msg.Take.SCENERY = "{#First/вн} невозможно взять."
-
---"надет"
-mp.msg.Take.WORN = "{#First} {#word/надет,#first} на {#firstwhere/вн}."
-mp.msg.Take.PARTOF = "{#First} {#if_hint/#first,plural,являются,является} частью {#firstwhere/рд}."
-
-mp.msg.Remove.WHERE = "{#First} не находится {#if_has/#second,supporter,на,в} {#second/пр,2}."
-mp.msg.Remove.REMOVE = "{#First} {#if_has/#second,supporter,поднят,извлечён из} {#second/рд}."
-
-mp.msg.Drop.SELF = "У {#me/рд} не хватит ловкости."
-mp.msg.Drop.WORN = "{#First/вн} сначала нужно снять."
---"помещать"
-mp.msg.Insert.INSERT = "{#Me} {#word/помещать,нст,#me} {#first/вн} в {#second/вн}."
-mp.msg.Insert.CLOSED = "{#Second} {#word/закрыт,#second}."
-mp.msg.Insert.NOTCONTAINER = "{#Second} не {#if_hint/#second,plural,могут,может} что-либо содержать."
-mp.msg.Insert.WHERE = "Нельзя поместить {#first/вн} внутрь себя."
-mp.msg.Insert.ALREADY = "Но {#first} уже и так {#word/находиться,#first} там."
-mp.msg.PutOn.NOTSUPPORTER = "Класть что-либо на {#second/вн} бессмысленно."
---"класть"
-mp.msg.PutOn.PUTON = "{#Me} {#word/класть,нст,#me} {#first/вн} на {#second/вн}."
-mp.msg.PutOn.WHERE = "Нельзя поместить {#first/вн} на себя."
-
---"брошен"
-mp.msg.Drop.DROP = "{#First} {#word/брошен,#first}."
-
-mp.msg.ThrowAt.NOTLIFE = "Бросать {#first/вн} в {#second/вн} бесполезно."
-mp.msg.ThrowAt.THROW = "У {#me/рд} не хватает решимости бросить {#first/вн} в {#second/вн}."
-
-
-mp.msg.Wear.NOTCLOTHES = "Надеть {#first/вн} невозможно."
-mp.msg.Wear.WORN = "{#First} уже на {#me/дт}."
---"надевать"
-mp.msg.Wear.WEAR = "{#Me} {#word/надевать,#me,нст} {#first/вн}."
-
-mp.msg.Disrobe.NOTWORN = "{#First} не на {#me/дт}."
---"снимать"
-mp.msg.Disrobe.DISROBE = "{#Me} {#word/снимать,#me,нст} {#first/вн}."
-
-mp.msg.SwitchOn.NONSWITCHABLE = "{#First/вн} невозможно включить."
---"включён"
-mp.msg.SwitchOn.ALREADY = "{#First} уже {#word/включён,#first}."
---"включать"
-mp.msg.SwitchOn.SWITCHON = "{#Me} {#word/включать,#me,нст} {#first/вн}."
-
-mp.msg.SwitchOff.NONSWITCHABLE = "{#First/вн} невозможно выключить."
---"выключён"
-mp.msg.SwitchOff.ALREADY = "{#First} уже {#word/выключён,#first}."
---"выключать"
-mp.msg.SwitchOff.SWITCHOFF = "{#Me} {#word/выключать,#me,нст} {#first/вн}."
-
---"годится"
-mp.msg.Eat.NOTEDIBLE = "{#First} не {#word/годится,#first} в пищу."
-mp.msg.Taste.TASTE = "Никакого необычного вкуса нет."
-
---"съедать"
-mp.msg.Eat.EAT = "{#Me} {#word/съедать,нст,#me} {#first/вн}."
-mp.msg.Drink.IMPOSSIBLE = "Выпить {#first/вн} невозможно."
-
-mp.msg.Push.STATIC = "{#First/вн} трудно сдвинуть с места."
-mp.msg.Push.SCENERY = "{#First/вн} двигать невозможно."
-mp.msg.Push.PUSH = "Ничего не произошло."
-
-mp.msg.Pull.STATIC = "{#First/вн} трудно сдвинуть с места."
-mp.msg.Pull.SCENERY = "{#First/вн} двигать невозможно."
-mp.msg.Pull.PULL = "Ничего не произошло."
-
-mp.msg.Turn.STATIC = "{#First/вн} трудно сдвинуть с места."
-mp.msg.Turn.SCENERY = "{#First/вн} двигать невозможно."
-mp.msg.Turn.TURN = "Ничего не произошло."
-
-mp.msg.Wait.WAIT = "Проходит немного времени."
-
-mp.msg.Touch.LIVE = "Не стоит давать волю рукам."
-mp.msg.Touch.TOUCH = "Никаких необычных ощущений нет."
-mp.msg.Touch.MYSELF = "{#Me} на месте."
-
-mp.msg.Rub.RUB = "Тереть {#first/вн} бессмысленно."
-mp.msg.Sing.SING = "С таким слухом и голосом как у {#me/рд} этого лучше не делать."
-
-mp.msg.Give.MYSELF = "{#First} и так у {#me/рд} есть."
-mp.msg.Give.GIVE = "{#Second/вн} это не заинтересовало."
-mp.msg.Show.SHOW = "{#Second/вн} это не впечатлило."
-
-mp.msg.Burn.BURN = "Поджигать {#first/вн} бессмысленно."
-mp.msg.Burn.BURN2 = "Поджигать {#first/вн} {#second/тв} бессмысленно."
---"поверь"
-mp.msg.Wake.WAKE = "Это не сон, а явь."
-mp.msg.WakeOther.WAKE = "Будить {#first/вн} не стоит."
-mp.msg.WakeOther.NOTLIVE = "Бессмысленно будить {#first/вн}."
-
-mp.msg.PushDir.PUSH = "Передвигать это нет смысла."
-
-mp.msg.Kiss.NOTLIVE = "Странное желание."
-mp.msg.Kiss.KISS = "{#Firstit/дт} это может не понравиться."
-mp.msg.Kiss.MYSELF = "Ну уж нет."
-
-mp.msg.Think.THINK = "Отличная идея!"
-mp.msg.Smell.SMELL = "Никакого необычного запаха нет."
-mp.msg.Smell.SMELL2 = "Пахнет как {#first}."
-
-mp.msg.Listen.LISTEN = "Никаких необычных звуков нет."
---"прислушаться"
-mp.msg.Listen.LISTEN2 = "{#Me} {#word/прислушаться,#me,прш} к {#first/дт}. Никаких необычных звуков нет."
-
---"выкопать"
-mp.msg.Dig.DIG = "{#Me} ничего не {#word/выкопать,#me,прш}."
-mp.msg.Dig.DIG2 = "Копать {#first/вн} бессмысленно."
-mp.msg.Dig.DIG3 = "Копать {#first/вн} {#second/тв} бессмысленно."
-
-mp.msg.Cut.CUT = "Резать {#first/вн} бессмысленно."
-mp.msg.Cut.CUT2 = "Резать {#first/вн} {#second/тв} бессмысленно."
-
-mp.msg.Tear.TEAR = "Рвать {#first/вн} бессмысленно."
-
-mp.msg.Tie.TIE = "Привязывать {#first/вн} бессмысленно."
-mp.msg.Tie.TIE2 = "Привязывать {#first/вн} к {#second/дт} бессмысленно."
-
-mp.msg.Blow.BLOW = "Дуть на/в {#first/вн} бессмысленно."
-
-mp.msg.Attack.LIFE = "Агрессия к {#first/дт} неоправданна."
-mp.msg.Attack.ATTACK = "Сила есть -- ума не надо?"
---"хотеть"
-mp.msg.Sleep.SLEEP = "{#Me} не {#word/хотеть,#me,нст} спать."
-mp.msg.Swim.SWIM = "Для этого здесь недостаточно воды."
-mp.msg.Fill.FILL = "Наполнять {#first/вн} бессмысленно."
---"подпрыгивать"
-mp.msg.Jump.JUMP = "{#Me} глупо {#word/подпрыгивать,#me,нст}."
-mp.msg.JumpOver.JUMPOVER = "Прыгать через {#first/вн} бессмысленно."
-
---"находить"
-mp.msg.Consult.CONSULT = "{#Me} не {#word/находить,#me,нст} ничего подходящего."
-
---"помахать"
-mp.msg.WaveHands.WAVE = "{#Me} глупо {#word/помахать,прш,#me} руками."
-mp.msg.Wave.WAVE = "{#Me} глупо {#word/помахать,прш,#me} {#first/тв}."
-
-mp.msg.Talk.SELF = "Беседы не получилось."
---"уметь"
-mp.msg.Talk.NOTLIVE = "{#First} не {#word/уметь,#first,нст} разговаривать."
---"отреагировать"
-mp.msg.Talk.LIVE = "{#First} никак не {#word/отреагировать,#first}."
-
-mp.msg.Tell.SELF = "Беседы не получилось."
-
---"безмолвен"
-mp.msg.Tell.NOTLIVE = "{#First} {#word/безмолвен,#first}."
---"отреагировать"
-mp.msg.Tell.LIVE = "{#First} никак не {#word/отреагировать,#first}."
---"нашёл"
-mp.msg.Tell.EMPTY = "{#Me} не {#word/нашёл,#me,прш} что сказать."
-
---"отвечать"
-mp.msg.Ask.NOTLIVE = "Ответа не последовало."
---"ответить"
-mp.msg.Ask.LIVE = "{#First} не {#word/ответить,прш,#first}."
---"придумать"
-mp.msg.Ask.EMPTY = "{#Me} не {#word/придумать,#me,прш} что спросить."
-mp.msg.Ask.SELF = "Хороший вопрос."
-
---"отвечать"
-mp.msg.Answer.NOTLIVE = "Ответа не последовало."
---"ответить"
-mp.msg.Answer.LIVE = "{#First} не {#word/ответить,прш,#first}."
---"придумать"
-mp.msg.Answer.EMPTY = "{#Me} не {#word/придумать,#me,прш} что ответить."
-mp.msg.Answer.SELF = "Хороший ответ."
-
-mp.msg.Yes.YES = "Вопрос был риторическим."
-
-mp.msg.Use.USE = "Как именно?"
-
---"продаваться"
-mp.msg.Buy.BUY = "{#First} не {#word/продаваться,нст,#first}."
-
-mp.keyboard_space = '<пробел>'
-mp.keyboard_backspace = '<удалить>'
-
-mp.msg.verbs.take = -"брать,#me,нст"
-
-mp.msg.GAMEOVER_HELP = [[Чтобы начать заново, введите рестарт.]];
-
-local function dict(t, hint)
-	local g = std.split(hint, ",")
-	for _, v in ipairs(g) do
-		if t[v] then
-			return t[v]
-		end
-	end
-end
-
-function mp:myself(_, hint)
-	local ww = dict({
-			["вн"] = "себя";
-			["дт"] = "себе";
-			["тв"] = "собой";
-			["пр"] = "себе";
-			["рд"] = "себя";
-		 }, hint)
-	return { ww }
-end
-
-function mp:it(w, hint)
-	hint = hint or ''
-	if w:hint'plural' then
-		return mp.mrd:noun(-"они/"..hint)
-	elseif w:hint'neuter' then
-		return mp.mrd:noun(-"оно/"..hint)
-	elseif w:hint'female' then
-		return mp.mrd:noun(-"она/"..hint)
-	end
-	return mp.mrd:noun(-"он/"..hint)
-end
-
-function mp:synonyms(w, hint)
-	local nt = {
-		['его'] = 'него';
-		['её'] = 'неё';
-		['ее'] = 'нее';
-		['ей'] = 'ней';
-		['им'] = 'ним';
-		['ими'] = 'ними';
-		['их'] = 'них';
-		['ему'] = 'нему';
-	}
-	local t = self:it(w, hint)
-	return { t, nt[t] }
-end
-
-mp.keyboard = {
-	'А','Б','В','Г','Д','Е','Ё','Ж','З','И','Й',
-	'К','Л','М','Н','О','П','Р','О','С','Т','У','Ф',
-	'Х','Ц','Ч','Ш','Щ','Ь','Ы','Ъ','Э','Ю','Я'
-}
-
-local function hints(w)
-	local h = std.split(w, ",")
-	local ret = {}
-	for _, v in ipairs(h) do
-		ret[v] = true
-	end
-	return ret
-end
-
-function mp:err_noun(noun)
-	if noun == '*' then return "{$fmt em|<любое слово>}" end
-	local hint = std.split(noun, "/")
-	local rc = "{$fmt em|"
-	if #hint == 2 then
-		local h = hints(hint[2])
-		local acc = 'кто/что'
-		if h["им"] then
-			acc = 'кто/что'
-		elseif h["рд"] then
-			acc = 'кого/чего'
-		elseif h["дт"] then
-			acc = 'кому/чему'
-		elseif h["вн"] then
-			acc = 'кого/что'
-		elseif h["тв"] then
-			acc = 'кем/чем'
-		elseif h["пр"] or h["пр2"] then
-			acc = 'ком/чём'
-		end
-		rc = rc ..  acc
-	else
-		rc = rc .. "кто/что"
-	end
-	rc = rc .. "}"
-	return rc
-end
-
-function mp.shortcut.vo(hint)
-	return "в ".. hint
---	local w = std.split(hint)
---	w = w[#w]
---	if mp.utf.len(w) > 2 and
---		(lang.is_vowel(utf.char(w, 1)) or
---		lang.is_vowel(utf.char(w, 2))) then
---		return "в ".. hint
---	end
---	return "во ".. hint
-end
-
-function mp.shortcut.so(hint)
-	return "с ".. hint
---	local w = std.split(hint)
---	w = w[#w]
---	if mp.utf.len(w) > 2 and
---		(lang.is_vowel(utf.char(w, 1)) or
---		lang.is_vowel(utf.char(w, 2))) then
---		return "с ".. hint
---	end
---	return "со ".. hint
-end
-
-function mp:before_Enter(w)
-	if mp:compass_dir(w) then
-		mp:xaction("Walk", w)
-		return
-	end
-	return false
-end
-
-mp.msg.HELP = [[{$fmt b|КАК ИГРАТЬ?}^^
-
-Вводите ваши действия в виде простых предложений вида: глагол -- существительное. Например:^
-> открыть дверь^
-> отпереть дверь ключом^
-> идти на север^
-> взять кепку^
-^
-Чтобы снова увидеть описание обстановки, введите "осмотреть", "осм" или просто нажмите "ввод".^
-^
-Чтобы осмотреть предмет, введите "осмотреть книгу" или просто "книга".^
-^
-Попробуйте "осмотреть себя" и узнать, кто вы.^
-^
-Чтобы узнать какие предметы у вас с собой, наберите "инвентарь" или "инв".^
-^
-Для перемещений используйте стороны света, например: "идти на север" или "север" или просто "с".^
-Кроме сторон света можно перемещаться вверх ("вверх" или "вв") и вниз ("вниз" или "вн").
-^^
-Вы можете воспользоваться клавишей "TAB" для автодополнения ввода.
-]]
-
-function mp.token.compass1(_)
-	return "{noun_obj}/@n_to,compass|{noun_obj}/@ne_to,compass|{noun_obj}/@e_to,compass|{noun_obj}/@se_to,compass|{noun_obj}/@s_to,compass|{noun_obj}/@sw_to,compass|{noun_obj}/@w_to,compass|{noun_obj}/@nw_to,compass"
-end
-
-function mp.token.compass2(_)
-	return "{noun_obj}/@u_to,compass|{noun_obj}/@d_to,compass|{noun_obj}/@in_to,compass|{noun_obj}/@out_to,compass"
-end
-
-function mp.shortcut.pref1()
-	return '[по|подо|за|во|про]'
-end
-
-function mp.shortcut.pref2()
-	return '[по|под|за|в|про]'
-end
-
-function mp.shortcut.pref3()
-	return 'по|подъ|за|въ|про'
-end
-
-std.mod_init(function(_)
-Verb { "#Walk",
-	"идти,{#pref1}йти,{#pref1}йди,иди,бежать,{#pref2}бежать,бег/и,{#pref2}бег/и,влез/ть,"..
-	"[|{#pref3}]ехать,едь,сесть,сядь,лечь,ляг,[в|]стать,[в|]стан/ь",
-	"на {compass1} : Walk",
-	"на|в|во {noun}/вн,scene,enterable : Enter",
-	"внутрь {noun}/рд,scene,enterable : Enter",
-	"к {noun}/дт,scene : Walk",
-	"{compass2}: Walk" }
-
-Verb { "#Exit",
-	"[вы|у]йти,выйд/и,уйд/и,вылез/ти,выхо/ди,обратно,назад,выбраться,выберись,выбираться",
-	"из|с|со {noun}/рд,scene : Exit",
-	"в|через|на {noun}/вн,scene,enterable : Enter",
-	"?наружу : Exit" }
-
-Verb { "#Exam",
-	"[о| |по|рас]смотр/еть,[раз|по]гляд/еть",
-	"?на {noun}/вн : Exam",
-	" : Look",
-	"инвентарь : Inv",
-	"~ под {noun}/тв : LookUnder",
-	"~ под {noun}/вн : LookUnder",
-	"~ в|во|на {noun}/пр,2 : Search",
-	"~ внутри {noun}/рд : Search",
-	"~ в|во {noun}/вн : Search",
-	"~ в|во {noun}/пр,2 о|об|обо|про * : Consult",
-	"~ о|об|обо|про * в|во {noun}/пр,2 : Consult reverse",
-}
-
-Verb { "#Search",
-	"[|по]искать,обыскать,[|по]ищ/и,обыщ/и,[|по]изуч/ать,[|по]исслед/овать",
-	"{noun}/вн : Search",
-	"в|во|на {noun}/пр,2 : Search",
-	"под {noun}/тв : LookUnder",
-	"~ в|во {noun}/пр,2 * : Consult",
-	"~ * в|во {noun}/пр,2 : Consult reverse",
-}
-
-Verb { "#Open",
-	"откр/ыть,распах/нуть,раскр/ыть,отвори/ть",
-	"{noun}/вн : Open",
-	"{noun}/вн {noun}/тв,held : Unlock",
-	"~ {noun}/тв,held {noun}/вн : Unlock reverse",
-}
-
-Verb { "#Unlock",
-	"отпереть,отопр/и",
-	"{noun}/вн {noun}/тв,held : Unlock",
-	"~ {noun}/тв,held {noun}/вн : Unlock reverse",
-}
-
-Verb { "#Close",
-	"закр/ыть",
-	"{noun}/вн : Close",
-	"{noun}/вн {noun}/тв,held : Lock",
-	"~ {noun}/вн на {noun}/вн,held : Lock",
-	"~ {noun}/тв,held {noun}/вн : Lock reverse",
-}
-
-Verb { "#Lock",
-	"запереть",
-	"{noun}/вн {noun}/тв,held : Lock",
-	"~ {noun}/вн на {noun}/вн,held : Lock",
-	"~ {noun}/тв,held {noun}/вн : Lock reverse",
-}
-
-Verb { "#Inv",
-	"инв/ентарь,с собой",
-	"Inv" }
-
-function mp.shortcut.pref4()
-	return '[ |за|подо]'
-end
-
-function mp.shortcut.pref5()
-	return '[ |за|под]'
-end
-
-Verb { "#Take",
-	"взять,возьм/и,{#pref4}брать,{#pref5}бер/и,доста/ть,схват/ить,"..
-	"украсть,украд/и,извле/чь,вын/уть,вытащ/ить",
-	"{noun}/вн,scene : Take",
-	"{noun}/вн,scene из|с|со|у {noun}/рд,inside,holder: Remove",
-	"~ из|с|со|у {noun}/рд,inside,holder {noun}/вн,scene: Remove reverse",
-}
-
-Verb { "#Drop",
-	"полож/ить,постав/ить,посади/ть,класть,клади/,помест/ить,"..
-	"[|про|за]сун/уть,воткн/уть,втык/ать,вставить,вставь/,влож/ить",
-	"{noun}/вн,held : Drop",
-	"{noun}/вн,held в|во {noun}/вн,inside : Insert",
-	"~ {noun}/вн,held внутрь {noun}/рд : Insert",
-	"{noun}/вн,held на {noun}/вн : PutOn",
-	"~ в|во {noun}/вн {noun}/вн : Insert reverse",
-	"~ внутрь {noun}/рд {noun}/вн : Insert reverse",
-	"~ на {noun}/вн {noun}/вн : PutOn reverse",
-}
-
-Verb {
-	"#ThrowAt",
-	"брос/ить,выбро/сить,кин/уть,кида/ть,швыр/нуть,метн/уть,метать",
-	"{noun}/вн,held : Drop",
-	"{noun}/вн,held в|во|на {noun}/вн : ThrowAt",
-	"~ в|во|на {noun}/вн {noun}/вн : ThrowAt reverse",
-	"~ {noun}/вн {noun}/дт : ThrowAt",
-	"~ {noun}/дт {noun}/вн : ThrowAt reverse",
-
-}
-
-Verb {
-	"#Wear",
-	"наде/ть,оде/ть",
-	"{noun}/вн,held : Wear",
-}
-
-Verb {
-	"#Disrobe",
-	"снять,сним/ать",
-	"{noun}/вн,worn : Disrobe",
-	"~ {noun}/вн с|со {noun}/рд : Remove",
-	"~ с|со {noun}/рд {noun}/вн : Remove reverse"
-}
-
-Verb {
-	"#SwitchOn",
-	"включ/ить,вруб/ить,активи/ровать",
-	"{noun}/вн : SwitchOn",
-}
-
-Verb {
-	"#SwitchOff",
-	"выключ/ить,выруб/ить,деактиви/ровать",
-	"{noun}/вн : SwitchOff",
-}
-
-Verb {
-	"#Eat",
-	"есть,съе/сть,куша/ть,скуша/ть,сожр/ать,жри,жрать,ешь",
-	"{noun}/вн,held : Eat",
-}
-
-Verb {
-	"#Taste",
-	"лизать,лизн/уть,попроб/овать,полиз/ать,сосать,пососа/ть",
-	"{noun}/вн : Taste"
-}
-
-Verb {
-	"#Drink",
-	"пить,выпить,выпей,выпью,пью",
-	"{noun}/вн,held : Drink",
-}
-
-function mp.shortcut.pref6()
-	return 'с|по|пере|за'
-end
-
-Verb {
-	"#Push",
-	"толк/ать,пих/ать,нажим/ать,нажм/и,нажать,[{#pref6}]двин/уть,[|{#pref6}]двига/ть,"..
-	"запих/нуть,затолк/ать,[|на]давить",
-	"?на {noun}/вн : Push",
-	"{noun}/вн на|в|во {noun}/вн : Transfer",
-	"~ {noun}/вн к {noun}/дт : Transfer",
-	"{noun}/вн {compass2} : Transfer",
-	"~ на|в|во {noun}/вн {noun}/вн : Transfer reverse",
-	"~ {compass2} {noun}/вн : Transfer reverse"
-}
-
-Verb {
-	"#Pull",
-	"[|вы|по]тян/уть,[|вы|по]тащ/ить,тягать,[|по]волоч/ь,[|по]волок/ти,дёрн/уть,дёрг/ать",
-	"?за {noun}/вн : Pull",
-	"{noun}/вн на|в|во {noun}/вн : Transfer",
-	"~ {noun}/вн к {noun}/дт : Transfer",
-	"{noun}/вн {compass2} : Transfer",
-	"~ на|в|во {noun}/вн {noun}/вн : Transfer reverse",
-	"~ {compass2} {noun}/вн : Transfer reverse"
-}
-
-Verb {
-	"#Turn",
-	"враща/ть,поверн/уть,верт/еть,поверт/еть,крути/ть",
-	"{noun}/вн : Turn"
-}
-
-Verb {
-	"#Wait",
-	"ждать,жди,подожд/ать,ожид/ать",
-	"Wait"
-}
-
-function mp.shortcut.pref7()
-	return 'за|по|про|пере|вы'
-end
-
-Verb {
-	"#Rub",
-	"[|{#pref7}]тереть,[|{#pref7}]три/,[{#pref7}]тира/ть,",
-	"{noun}/вн : Rub"
-}
-
-Verb {
-	"#Sing",
-	"[|с]петь,спой/,пой",
-	"Sing"
-}
-
-Verb {
-	"#Touch",
-	"[ |по]трога/ть,трон/уть,дотрон/уться,[ |при]косну/ться,касать/ся,[ |по|о]щупа/ть,[ |по]глад/ить",
-	"{noun}/вн : Touch",
-	"~ до {noun}/рд : Touch",
-	"~ к {noun}/дт : Touch",
-	"~ {noun}/рд : Touch",
-}
-
-Verb {
-	"#Give",
-	"дать,отда/ть,предло/жить,предла/гать,дам,даю,дадим",
-	"{noun}/вн,held {noun}/дт,live : Give",
-	"~ {noun}/дт,live {noun}/вн,held : Give reverse",
-}
-
-Verb {
-	"#Show",
-	"показ/ать,покаж/и",
-	"{noun}/вн,held {noun}/дт,live : Show",
-	"~ {noun}/дт,live {noun}/вн,held : Show reverse",
-}
-
-Verb {
-	"#Burn",
-	"[|под]жечь,жг/и,подожги/,поджиг/ай,зажг/и,зажиг/ай,зажечь",
-	"{noun}/вн : Burn",
-	"{noun}/вн {noun}/тв,held : Burn",
-	"~ {noun}/тв,held {noun}/вн reverse",
-}
-
-Verb {
-	"#Wake",
-	"будить,разбуд/ить,просн/уться,бужу",
-	"{noun}/вн,live : WakeOther",
-	"Wake",
-}
-
-Verb {
-	"#Kiss",
-	"целовать,поцел/овать,чмок/нуть,обним/ать,обнять,целуй",
-	"{noun}/вн,live : Kiss"
-}
-
-Verb {
-	"#Think",
-	"дума/ть,мысл/ить,подум/ать,рассужд/ать",
-	"Think"
-}
-
-Verb {
-	"#Smell",
-	"нюха/ть,понюха/ть,занюх/ать,нюхн/уть,принюх/аться",
-	"Smell",
-	"{noun}/вн : Smell"
-}
-
-Verb {
-	"#Listen",
-	"слуша/ть,послуша/ть,прислушать/ся,слыш/ать,слух/",
-	"Listen",
-	"{noun}/вн : Listen",
-	"~ к {noun}/дт : Listen",
-}
-
-Verb {
-	"#Dig",
-	"копа/ть,выкопа/ть,выры/ть,рыть,рой,вырой",
-	"Dig",
-	"{noun}/вн,scene : Dig",
-	"{noun}/вн,scene {noun}/тв,held : Dig",
-	"~ {noun}/тв,held {noun}/вн,scene : Dig reverse",
-}
-
-function mp.shortcut.pref8()
-	return '[|раз|на|по|от|пере|вы]'
-end
-
-Verb {
-	"#Cut",
-	"{#pref8}рез/ать,{#pref8}реж/ь",
-	"{noun}/вн : Cut",
-	"{noun}/вн {noun}/тв,held: Cut",
-	"~ {noun}/тв,held {noun}/вн: Cut reverse"
-}
-
-function mp.shortcut.pref9()
-	return '[ |по|разо|со]'
-end
-
-Verb {
-	"#Tear",
-	"{#pref9}рвать,{#pref9}рви/,{#pref9}рву",
-	"{noun}/вн : Tear",
-}
-
-Verb {
-	"#Tie",
-	"[при|с]вяз/ать,[при|с]вяж/и",
-	"{noun}/вн : Tie",
-	"{noun}/вн к {noun}/дт : Tie",
-	"~ {noun}/вн с|со {noun}/тв : Tie",
-	"~ к {noun}/дт {noun}/вн : Tie reverse",
-	"~ с|со {noun}/тв {noun}/вн : Tie reverse",
-}
-
-Verb {
-	"#Blow",
-	"дуть,дуй/,дун/ь,задут/ь,задун/ь,задуй/",
-	"в|во|на {noun}/вн : Blow",
-	"~ {noun}/вн : Blow", -- задуть
-}
-
-Verb {
-	"#Attack",
-	"атак/овать,[|у|вы|раз|по|выши]бить,[|по|раз]бей/,удар/ить,"..
-	"[|с|раз|по|вы|вз]лома/ть,разруш/ить,побь/,круш/ить,напасть,напад/ать,пнуть",
-	"?на {noun}/вн : Attack"
-}
-
-Verb {
-	"#Sleep",
-	"спать,усн/уть,засн/уть,дрем/ать",
-	"Sleep",
-}
-
-Verb {
-	"#Swim",
-	"плыть,плав/ать,ныря/ть,уплы/ть,поплы/ть,нырн/уть,[ |ис]купа/ться",
-	"Swim",
-}
-
-Verb {
-	"#Consult",
-	"[|про|по]чита/ть,проч/есть",
-	"в|во {noun}/пр,2 о|об|обо|про * : Consult",
-	"~ о|об|обо|про * в|во {noun}/пр,2 : Consult reverse",
-	"~ {noun}/вн : Exam",
-}
-
-Verb {
-	"#Fill",
-	"наполн/ить,нали/ть",
-	"?в {noun}/вн : Fill",
-	"~ внутрь {noun}/рд : Fill"
-}
-
-Verb {
-	"#Jump",
-	"[|по]прыг/ать,скак/ать,[|пере|под]прыг/нуть,переско/чить",
-	"Jump",
-	"через {noun}/вн,scene : JumpOver",
-	"~ в {noun}/вн,scene : Enter",
-	"~ на {noun}/вн,scene : Climb",
-	"~ с|со {noun}/рд,scene : GetOff",
-	"~ {compass2} : Walk",
-	"~ +через {noun}/вн,scene : JumpOver",
-}
-
-Verb {
-	"#Wave",
-	"[|по]мах/ать,взмахн/уть,помаш/и",
-	"WaveHands",
-	"~ руками : WaveHands",
-	"{noun}/тв,held : Wave"
-}
-
-Verb {
-	"#Climb",
-	"[|за|по|про|в]лез/ть,карабк/аться,взбир/ться,взобраться,взбери/сь",
-	"на {noun}/вн,scene : Climb",
-	"по {noun}/дт,scene : Climb",
-	"~ внутрь {noun}/рд,scene : Enter",
-	"~ в|во {noun}/вн,scene : Enter",
-	"{compass2}: Walk",
-}
-
-Verb {
-	"#GetOff",
-	"слез/ть,спусти/ться,встать,встан/ь",
-	"GetOff",
-	"{compass2}: Walk",
-	"с|со {noun}/рд,scene : GetOff",
-}
-
-Verb {
-	"#Buy",
-	"купи/ть,покупать",
-	"{noun}/вн,scene : Buy"
-}
-
-Verb {
-	"#Talk",
-	"[|по]говор/ить,[|по]бесед/овать,разговарива/ть",
-	"с|со {noun}/тв,live : Talk"
-
-}
-
-Verb {
-	"#Tell",
-	"сказать,сообщи/ть,сообщу,рассказать,расскаж/ите",
-	"{noun}/дт,live о|об|обо|про * : Tell",
-	"~ * {noun}/дт,live : Tell reverse",
-	"~ {noun}/дт * : AskTo",
-}
-
-Verb {
-	"#Ask",
-	"спросит/ь,расспросит/ь",
-	"{noun}/вн,live о|об|обо|про * : Ask",
-	"~ у {noun}/рд,live о|об|обо|про * : Ask",
-	"~ о|об|обо|про * у {noun}/рд,live : Ask reverse",
-}
-
-Verb {
-	"#AskFor",
-	"попроси/ть,выпроси/ть,уговори/ть,проси/ть,попрош/у,выпрош/у",
-	"у {noun}/рд,live * : AskFor",
-	"* у {noun}/рд,live : AskFor reverse",
-	"~ {noun}/вн,live * : AskTo",
-}
-
-Verb {
-	"#Answer",
-	"ответ/ить,отвеч/ать",
-	"{noun}/дт,live * : Answer",
-	"~ * {noun}/дт,live : Answer reverse",
-}
-
-Verb {
-	"#Yes",
-	"да",
-	"Yes",
-}
-
-Verb {
-	"#No",
-	"нет",
-	"No",
-}
-
-Verb {
-    "~ использ/овать,воспольз/оваться",
-    "{noun}/вн : Use",
-    "{noun}/тв : Use",
-}
-
-if DEBUG then
-	MetaVerb {
-		"#MetaWord",
-		"~_слово",
-		"* : MetaWord"
-	}
-	MetaVerb {
-		"#MetaNoun",
-		"~_сущ/ествительное",
-		"* : MetaNoun"
-	}
-	MetaVerb {
-		"#MetaTrace",
-		"~_трассировка",
-		"да : MetaTraceOn",
-		"нет : MetaTraceOff",
-	}
-	MetaVerb {
-		"#MetaDump",
-		"~_дамп",
-		"MetaDump"
-	}
-end
-MetaVerb {
-	"#MetaTranscript",
-	"~транскрипт",
-	"да : MetaTranscriptOn",
-	"нет : MetaTranscriptOff",
-	"MetaTranscript",
-}
-
-MetaVerb {
-	"#MetaExpert",
-	"~парсер",
-	"эксперт да : MetaExpertOn",
-	"эксперт нет : MetaExpertOff",
-}
-
-MetaVerb {
-	"#MetaSave",
-	"~сохрани/ть",
-	"MetaSave"
-}
-MetaVerb {
-	"#MetaLoad",
-	"~загрузи/ть",
-	"MetaLoad"
-}
-
-if DEBUG then
-MetaVerb {
-	"#MetaAutoplay",
-	"~автоскрипт",
-	"MetaAutoplay"
-}
-end
-
-mp.msg.MetaRestart.RESTART = "Начать заново?";
-
-MetaVerb {
-	"#MetaRestart",
-	"~заново,~рестарт",
-	"MetaRestart"
-}
-MetaVerb {
-	"#MetaHelp",
-	"~помощь,помоги/те",
-	"MetaHelp",
-}
-end, 1)
-
-std.mod_start(function()
-	if mp.undo > 0 then
-		mp.msg.MetaUndo.EMPTY = "Отменять нечего."
-		MetaVerb {
-			"#MetaUndo",
-			"~отмен/ить",
-			"MetaUndo",
-		}
-	end
-end)
--- Dialog
-std.phr.default_Event = "Exam"
-
-Verb ({"~ сказать", "{select} : Exam" }, std.dlg)
-Verb ({'#Next', "дальше", "Next" }, mp.cutscene)
-Verb ({'#Exam', "~ осмотреть", "Look" }, std.dlg)
-
-mp.cutscene.default_Verb = "дальше"
-mp.cutscene.help = fmt.em "<дальше>";
-
-std.dlg.default_Verb = "осмотреть"
-std.player.word = -"ты/мр,2л"
+//  ======  СУЩЕСТВИТЕЛЬНЫЕ   ========
+
+// существительные мужского рода
+аа A С мр,ед,им
+аб A С мр,ед,рд
+Эф A С мр,ед,рд,2
+ав A С мр,ед,дт
+аг A С мр,ед,вн
+ад A С мр,ед,тв
+ае A С мр,ед,пр
+Эх A С мр,ед,пр,2
+ас A С мр,ед,зв,
+аж A С мр,мн,им
+аз A С мр,мн,рд
+аи A С мр,мн,дт
+ай A С мр,мн,вн
+ак A С мр,мн,тв
+ал A С мр,мн,пр
+ам B С мр,0
+ан B С мр,ед,0
+
+// =============  разговорный  ================
+Юо A С мр,ед,им,разг 
+Юп A С мр,ед,рд,разг 
+Юр A С мр,ед,дт,разг 
+Юс A С мр,ед,вн,разг 
+Ют A С мр,ед,тв,разг 
+Юф A С мр,ед,пр,разг 
+Юх A С мр,ед,зв,разг 
+Яб A С мр,мн,им,разг 
+Яа A С мр,мн,рд,разг
+Яв A С мр,мн,дт,разг
+Яг A С мр,мн,вн,разг
+Яд A С мр,мн,тв,разг
+Яж A С мр,мн,пр,разг
+
+
+// =============  архаизм  ================
+го A С мр,ед,им,арх 
+гп A С мр,ед,рд,арх 
+гр A С мр,ед,дт,арх 
+гс A С мр,ед,вн,арх 
+гт A С мр,ед,тв,арх 
+гу A С мр,ед,пр,арх 
+гф A С мр,мн,им,арх 
+гх A С мр,мн,рд,арх
+гц A С мр,мн,дт,арх
+гч A С мр,мн,вн,арх
+гш A С мр,мн,тв,арх
+гщ A С мр,мн,пр,арх
+
+
+// существительные мужского-женского рода
+
+ва E С мр-жр,ед,им
+вб E С мр-жр,ед,рд
+вв E С мр-жр,ед,дт
+вг E С мр-жр,ед,вн
+вд E С мр-жр,ед,тв
+ве E С мр-жр,ед,пр
+вж E С мр-жр,мн,им
+вз E С мр-жр,мн,рд
+ви E С мр-жр,мн,дт
+вй E С мр-жр,мн,вн
+вк E С мр-жр,мн,тв
+вл E С мр-жр,мн,пр
+вм F С мр-жр,0
+вн F С мр-жр,ед,0
+
+
+// существительные мужского-женского рода (архаизм)
+во E С арх,мр-жр,ед,им
+вп E С арх,мр-жр,ед,рд
+вр E С арх,мр-жр,ед,дт
+вс E С арх,мр-жр,ед,вн
+вт E С арх,мр-жр,ед,тв
+ву E С арх,мр-жр,ед,пр
+вф E С арх,мр-жр,мн,им
+вх E С арх,мр-жр,мн,рд
+вц E С арх,мр-жр,мн,дт
+вч E С арх,мр-жр,мн,вн
+вш E С арх,мр-жр,мн,тв
+вщ E С арх,мр-жр,мн,пр
+
+// существительные женского рода
+га G С жр,ед,им
+гб G С жр,ед,рд
+гв G С жр,ед,дт
+гг G С жр,ед,вн
+гд G С жр,ед,тв
+ге G С жр,ед,пр
+Эч G С жр,ед,пр,2
+Йш G С жр,ед,зв
+гж G С жр,мн,им
+гз G С жр,мн,рд
+ги G С жр,мн,дт
+гй G С жр,мн,вн
+гк G С жр,мн,тв
+гл G С жр,мн,пр
+гм H С жр,0
+гн H С жр,ед,0
+
+// существительные женского (архаизм)
+Йа G С арх,жр,ед,им
+Йб G С арх,жр,ед,рд
+Йв G С арх,жр,ед,дт
+Йг G С арх,жр,ед,вн
+Йд G С арх,жр,ед,тв
+Йе G С арх,жр,ед,пр
+Йж G С арх,жр,мн,им
+Йз G С арх,жр,мн,рд
+Йи G С арх,жр,мн,дт
+Йй G С арх,жр,мн,вн
+Йк G С арх,жр,мн,тв
+Йл G С арх,жр,мн,пр
+
+
+// существительные женского (разговорный)
+Йм G С разг,жр,ед,им
+Йн G С разг,жр,ед,рд
+Йо G С разг,жр,ед,дт
+Йп G С разг,жр,ед,вн
+Йр G С разг,жр,ед,тв
+Йс G С разг,жр,ед,пр
+Йт G С разг,жр,мн,им
+Йу G С разг,жр,мн,рд
+Йф G С разг,жр,мн,дт
+Йх G С разг,жр,мн,вн
+Йц G С разг,жр,мн,тв
+Йч G С разг,жр,мн,пр
+
+
+
+// существительные среднего рода
+
+еа K С ср,ед,им
+еб K С ср,ед,рд
+ев K С ср,ед,дт
+ег K С ср,ед,вн
+ед K С ср,ед,тв
+ее K С ср,ед,пр
+еж K С ср,мн,им
+ез K С ср,мн,рд
+еи K С ср,мн,дт
+ей K С ср,мн,вн
+ек K С ср,мн,тв
+ел K С ср,мн,пр
+ем L С ср,0
+ен L С ср,ед,0
+
+// им. Ленина
+Эя K С ср,ед,рд,аббр
+
+// существительные среднего рода (разговорный)
+Яз K С разг,ср,ед,им
+Яи K С разг,ср,ед,рд
+Як K С разг,ср,ед,дт
+Ял K С разг,ср,ед,вн
+Ям K С разг,ср,ед,тв
+Ян K С разг,ср,ед,пр
+Яо K С разг,ср,мн,им
+Яп K С разг,ср,мн,рд
+Яр K С разг,ср,мн,дт
+Яс K С разг,ср,мн,вн
+Ят K С разг,ср,мн,тв
+Яу K С разг,ср,мн,пр
+
+// pluralia tantum
+иж Q С мн,мн,им
+из Q С мн,мн,рд
+ии Q С мн,мн,дт
+ий Q С мн,мн,вн
+ик Q С мн,мн,тв
+ил Q С мн,мн,пр
+им R С мн,0
+
+//  аббревиатуры
+ао B С мр,аббр,0,
+ап B С мр,ед,аббр,0
+ат H С жр,аббр,0
+ау H С жр,ед,аббр,0
+ац H С ср,аббр,0
+ач H С ср,ед,аббр,0
+аъ R С мн,аббр,0
+
+// имена
+
+бо C С мр,имя,ед,им
+бп C С мр,имя,ед,рд
+бр C С мр,имя,ед,дт
+бс C С мр,имя,ед,вн
+бт C С мр,имя,ед,тв
+бу C С мр,имя,ед,пр
+бь C С мр,имя,ед,зв,разг
+бф C С мр,имя,мн,им
+бх C С мр,имя,мн,рд
+бц C С мр,имя,мн,дт
+бч C С мр,имя,мн,вн
+бш C С мр,имя,мн,тв
+бщ C С мр,имя,мн,пр
+
+бН I С мр,имя,0
+
+
+вН E С мр-жр,имя,0
+вО E С мр-жр,имя,ед,им
+вП E С мр-жр,имя,ед,рд
+вР E С мр-жр,имя,ед,дт
+вС E С мр-жр,имя,ед,вн
+вТ E С мр-жр,имя,ед,тв
+вУ E С мр-жр,имя,ед,пр
+вЬ E С мр-жр,имя,ед,зв,разг
+вФ E С мр-жр,имя,мн,им
+вХ E С мр-жр,имя,мн,рд
+вЦ E С мр-жр,имя,мн,дт
+вЧ E С мр-жр,имя,мн,вн
+вШ E С мр-жр,имя,мн,тв
+вЩ E С мр-жр,имя,мн,пр
+
+
+до I С жр,имя,ед,им
+дп I С жр,имя,ед,рд
+др I С жр,имя,ед,дт
+дс I С жр,имя,ед,вн
+дт I С жр,имя,ед,тв
+ду I С жр,имя,ед,пр
+дь I С жр,имя,ед,зв,разг
+дф I С жр,имя,мн,им
+дх I С жр,имя,мн,рд
+дц I С жр,имя,мн,дт
+дч I С жр,имя,мн,вн
+дш I С жр,имя,мн,тв
+дщ I С жр,имя,мн,пр
+
+
+дН I С жр,имя,0
+
+
+
+// мужские отчества 
+
+Ра Q С мр,отч,ед,им,
+Рб Q С мр,отч,ед,рд,
+Рв Q С мр,отч,ед,дт,
+Рг Q С мр,отч,ед,вн,
+Рд Q С мр,отч,ед,тв,
+Ре Q С мр,отч,ед,пр,
+Рн Q С мр,отч,мн,им,
+Ро Q С мр,отч,мн,рд,
+Рп Q С мр,отч,мн,дт,
+Рр Q С мр,отч,мн,вн,
+Рс Q С мр,отч,мн,тв,
+Рт Q С мр,отч,мн,пр,
+
+// женские отчества 
+
+Рж Q С жр,отч,ед,им,
+Рз Q С жр,отч,ед,рд,
+Ри Q С жр,отч,ед,дт,
+Рк Q С жр,отч,ед,вн,
+Рл Q С жр,отч,ед,тв,
+Рм Q С жр,отч,ед,пр,
+Ру Q С жр,отч,мн,им,
+Рф Q С жр,отч,мн,рд,
+Рх Q С жр,отч,мн,дт,
+Рц Q С жр,отч,мн,вн,
+Рч Q С жр,отч,мн,тв,
+Рш Q С жр,отч,мн,пр,
+
+
+
+// мужские отчества  (разг.)
+
+Та Q С мр,отч,разг,ед,им,
+Тб Q С мр,отч,разг,ед,рд,
+Тв Q С мр,отч,разг,ед,дт,
+Тг Q С мр,отч,разг,ед,вн,
+Тд Q С мр,отч,разг,ед,тв,
+Те Q С мр,отч,разг,ед,пр,
+Тн Q С мр,отч,разг,мн,им,
+То Q С мр,отч,разг,мн,рд,
+Тп Q С мр,отч,разг,мн,дт,
+Тр Q С мр,отч,разг,мн,вн,
+Тс Q С мр,отч,разг,мн,тв,
+Тт Q С мр,отч,разг,мн,пр,
+
+// женские отчества  (разг.)
+
+Тж Q С жр,отч,разг,ед,им,
+Тз Q С жр,отч,разг,ед,рд,
+Ти Q С жр,отч,разг,ед,дт,
+Тк Q С жр,отч,разг,ед,вн,
+Тл Q С жр,отч,разг,ед,тв,
+Тм Q С жр,отч,разг,ед,пр,
+Ту Q С жр,отч,разг,мн,им,
+Тф Q С жр,отч,разг,мн,рд,
+Тх Q С жр,отч,разг,мн,дт,
+Тц Q С жр,отч,разг,мн,вн,
+Тч Q С жр,отч,разг,мн,тв,
+Тш Q С жр,отч,разг,мн,пр,
+
+
+
+//  ======  ПРИЛАГАТЕЛЬНЫЕ   ========
+
+йа Y П мр,ед,им,од,но
+йб Y П мр,ед,рд,од,но
+йв Y П мр,ед,дт,од,но
+йг Y П мр,ед,вн,од
+Рщ Y П мр,ед,вн,но
+йд Y П мр,ед,тв,од,но
+йе Y П мр,ед,пр,од,но
+йж Y П жр,ед,им,од,но
+йз Y П жр,ед,рд,од,но
+йи Y П жр,ед,дт,од,но
+йй Y П жр,ед,вн,од,но
+йк Y П жр,ед,тв,од,но
+йл Y П жр,ед,пр,од,но
+йм Y П ср,ед,им,од,но
+йн Y П ср,ед,рд,од,но
+йо Y П ср,ед,дт,од,но
+йп Y П ср,ед,вн,од,но
+йр Y П ср,ед,тв,од,но
+йс Y П ср,ед,пр,од,но
+йт Y П мн,им,од,но
+йу Y П мн,рд,од,но
+йф Y П мн,дт,од,но
+йх Y П мн,вн,од
+Рь Y П мн,вн,но
+йц Y П мн,тв,од,но
+йч Y П мн,пр,од,но
+йш Y КР_ПРИЛ мр,ед,од,но
+йщ Y КР_ПРИЛ жр,ед,од,но
+йы Y КР_ПРИЛ ср,ед,од,но
+йэ Y КР_ПРИЛ мн,од,но
+йю Y П сравн,од,но
+йъ Y П сравн,2,од,но
+йь Y П сравн,од,но,разг
+йя Z П 0,од,но
+
+//== превосходная степень прилагательного
+иа Y П прев,мр,ед,им,од,но
+иб Y П прев,мр,ед,рд,од,но
+ив Y П прев,мр,ед,дт,од,но
+иг Y П прев,мр,ед,вн,од
+ид Y П прев,мр,ед,вн,но
+ие Y П прев,мр,ед,тв,од,но
+Гб Y П прев,мр,ед,пр,од,но
+Гв Y П прев,жр,ед,им,од,но
+Гг Y П прев,жр,ед,рд,од,но
+Гд Y П прев,жр,ед,дт,од,но
+Ге Y П прев,жр,ед,вн,од,но
+Гж Y П прев,жр,ед,тв,од,но
+Гз Y П прев,жр,ед,пр,од,но
+ин Y П прев,ср,ед,им,од,но
+ио Y П прев,ср,ед,рд,од,но
+ип Y П прев,ср,ед,дт,од,но
+ир Y П прев,ср,ед,вн,од,но
+ис Y П прев,ср,ед,тв,од,но
+ит Y П прев,ср,ед,пр,од,но
+иу Y П прев,мн,им,од,но
+иф Y П прев,мн,рд,од,но
+их Y П прев,мн,дт,од,но
+иц Y П прев,мн,вн,од
+ич Y П прев,мн,вн,но
+иш Y П прев,мн,тв,од,но
+ищ Y П прев,мн,пр,од,но
+
+
+
+
+//  ========   безличные глаголы  ============
+// подуматься,светать
+нр a ИНФИНИТИВ безл
+// подумается
+нс a Г безл,буд 
+// подумалось,светало
+нт a Г безл,прш
+// светает
+ну a Г безл,нст
+
+
+
+ка a ИНФИНИТИВ дст
+
+//  ========================================
+//  ========   личные формы глагола  ============
+
+кб a Г дст,нст,1л,ед
+кв a Г дст,нст,1л,мн
+кг a Г дст,нст,2л,ед
+кд a Г дст,нст,2л,мн
+ке a Г дст,нст,3л,ед
+кж a Г дст,нст,3л,мн
+кз a Г дст,прш,мр,ед
+ки a Г дст,прш,жр,ед
+кй a Г дст,прш,ср,ед
+кк a Г дст,прш,мн
+кп a Г дст,буд,1л,ед
+кр a Г дст,буд,1л,мн
+кс a Г дст,буд,2л,ед
+кт a Г дст,буд,2л,мн
+ку a Г дст,буд,3л,ед
+кф a Г дст,буд,3л,мн
+
+
+// разговорные формы: "ложу", "ложим","дышут", "ложут", "ложат", "дождуся"
+Ръ a Г дст,нст,1л,ед,разг
+Ры a Г дст,нст,1л,мн,разг
+Рэ a Г дст,нст,2л,ед,разг
+Рю a Г дст,нст,2л,мн,разг
+Ря a Г дст,нст,3л,ед,разг
+кю a Г дст,нст,3л,мн,разг
+кя a Г дст,прш,мн,разг
+
+кэ a Г дст,буд,1л,ед,разг
+Эа a Г дст,буд,1л,мн,разг
+Эб a Г дст,буд,2л,ед,разг
+Эв a Г дст,буд,2л,мн,разг
+Эг a Г дст,буд,3л,ед,разг
+Эд a Г дст,буд,3л,мн,разг
+
+
+
+// архаичные формы: "указует", 
+Эе a Г дст,нст,1л,ед,арх
+Эж a Г дст,нст,1л,мн,арх
+Эз a Г дст,нст,2л,ед,арх
+Эи a Г дст,нст,2л,мн,арх
+Эй a Г дст,нст,3л,ед,арх
+Эк a Г дст,нст,3л,мн,арх
+Эл a Г дст,прш,мн,арх
+
+Эм a Г дст,буд,1л,ед,арх
+Эн a Г дст,буд,1л,мн,арх
+Эо a Г дст,буд,2л,ед,арх
+Эп a Г дст,буд,2л,мн,арх
+Эр a Г дст,буд,3л,ед,арх
+Эс a Г дст,буд,3л,мн,арх
+
+
+// ===================================================
+// ==============   ДЕЕПРИЧАСТИЕ ====================
+// ===================================================
+кн a ДЕЕПРИЧАСТИЕ дст,нст
+ко a ДЕЕПРИЧАСТИЕ дст,прш
+
+// ===================================================
+// ==============   ДЕЕПРИЧАСТИЕ (архаизм)  ==========
+// ===================================================
+Эт a ДЕЕПРИЧАСТИЕ дст,нст,арх
+Эу a ДЕЕПРИЧАСТИЕ дст,прш,арх
+
+//===================================================
+// ==============   ИМПЕРАТИВ    ====================
+// "не будем же забывать наших предков!"
+
+нп a Г дст,пвл,1л,мн
+къ a Г дст,пвл,1л,ед
+кл a Г дст,пвл,2л,ед
+км a Г дст,пвл,2л,мн
+
+
+//  "прощевайте"
+ль a Г дст,пвл,2л,ед,разг
+кь a Г дст,пвл,2л,мн,разг
+
+// см.
+Эю a Г дст,пвл,2л,ед,аббр 
+
+//  "изыди", "изыдите"
+фъ a Г дст,пвл,2л,ед,арх
+фю a Г дст,пвл,2л,мн,арх
+
+
+//  действительное причастие настоящего времени
+ла a ПРИЧАСТИЕ од,но,нст,дст,ед,мр,им
+лб a ПРИЧАСТИЕ од,но,нст,дст,ед,мр,рд
+лв a ПРИЧАСТИЕ од,но,нст,дст,ед,мр,дт
+лг a ПРИЧАСТИЕ од,нст,дст,ед,мр,вн
+Ла a ПРИЧАСТИЕ но,нст,дст,ед,мр,вн
+лд a ПРИЧАСТИЕ од,но,нст,дст,ед,мр,тв
+ле a ПРИЧАСТИЕ од,но,нст,дст,ед,мр,пр
+лз a ПРИЧАСТИЕ од,но,нст,дст,ед,жр,им
+ли a ПРИЧАСТИЕ од,но,нст,дст,ед,жр,рд
+лй a ПРИЧАСТИЕ од,но,нст,дст,ед,жр,дт
+лк a ПРИЧАСТИЕ од,но,нст,дст,ед,жр,вн
+лл a ПРИЧАСТИЕ од,но,нст,дст,ед,жр,тв
+лм a ПРИЧАСТИЕ од,но,нст,дст,ед,жр,пр
+ло a ПРИЧАСТИЕ од,но,нст,дст,ед,ср,им
+лп a ПРИЧАСТИЕ од,но,нст,дст,ед,ср,рд
+лр a ПРИЧАСТИЕ од,но,нст,дст,ед,ср,дт
+лс a ПРИЧАСТИЕ од,но,нст,дст,ед,ср,вн
+лт a ПРИЧАСТИЕ од,но,нст,дст,ед,ср,тв
+лу a ПРИЧАСТИЕ од,но,нст,дст,ед,ср,пр
+лх a ПРИЧАСТИЕ од,но,нст,дст,мн,им
+лц a ПРИЧАСТИЕ од,но,нст,дст,мн,рд
+лч a ПРИЧАСТИЕ од,но,нст,дст,мн,дт
+лш a ПРИЧАСТИЕ од,нст,дст,мн,вн
+Лй a ПРИЧАСТИЕ но,нст,дст,мн,вн
+лщ a ПРИЧАСТИЕ од,но,нст,дст,мн,тв
+лы a ПРИЧАСТИЕ од,но,нст,дст,мн,пр
+
+//  действительное причастие прошедшего времени
+ма a ПРИЧАСТИЕ од,но,прш,дст,ед,мр,им
+мб a ПРИЧАСТИЕ од,но,прш,дст,ед,мр,рд
+мв a ПРИЧАСТИЕ од,но,прш,дст,ед,мр,дт
+мг a ПРИЧАСТИЕ од,прш,дст,ед,мр,вн
+Лб a ПРИЧАСТИЕ но,прш,дст,ед,мр,вн
+мд a ПРИЧАСТИЕ од,но,прш,дст,ед,мр,тв
+ме a ПРИЧАСТИЕ од,но,прш,дст,ед,мр,пр
+мз a ПРИЧАСТИЕ од,но,прш,дст,ед,жр,им
+ми a ПРИЧАСТИЕ од,но,прш,дст,ед,жр,рд
+мй a ПРИЧАСТИЕ од,но,прш,дст,ед,жр,дт
+мк a ПРИЧАСТИЕ од,но,прш,дст,ед,жр,вн
+мл a ПРИЧАСТИЕ од,но,прш,дст,ед,жр,тв
+мм a ПРИЧАСТИЕ од,но,прш,дст,ед,жр,пр
+мо a ПРИЧАСТИЕ од,но,прш,дст,ед,ср,им
+мп a ПРИЧАСТИЕ од,но,прш,дст,ед,ср,рд
+мр a ПРИЧАСТИЕ од,но,прш,дст,ед,ср,дт
+мс a ПРИЧАСТИЕ од,но,прш,дст,ед,ср,вн
+мт a ПРИЧАСТИЕ од,но,прш,дст,ед,ср,тв
+му a ПРИЧАСТИЕ од,но,прш,дст,ед,ср,пр
+мх a ПРИЧАСТИЕ од,но,прш,дст,мн,им
+мц a ПРИЧАСТИЕ од,но,прш,дст,мн,рд
+мч a ПРИЧАСТИЕ од,но,прш,дст,мн,дт
+мш a ПРИЧАСТИЕ од,прш,дст,мн,вн
+Лк a ПРИЧАСТИЕ но,прш,дст,мн,вн
+мщ a ПРИЧАСТИЕ од,но,прш,дст,мн,тв
+мы a ПРИЧАСТИЕ од,но,прш,дст,мн,пр
+
+//  страдательное причастие настоящего времени
+па b ПРИЧАСТИЕ од,но,нст,стр,ед,мр,им
+пб b ПРИЧАСТИЕ од,но,нст,стр,ед,мр,рд
+пв b ПРИЧАСТИЕ од,но,нст,стр,ед,мр,дт
+пг b ПРИЧАСТИЕ од,нст,стр,ед,мр,вн
+Лг b ПРИЧАСТИЕ но,нст,стр,ед,мр,вн
+пд b ПРИЧАСТИЕ од,но,нст,стр,ед,мр,тв
+пе b ПРИЧАСТИЕ од,но,нст,стр,ед,мр,пр
+пж b КР_ПРИЧАСТИЕ од,но,нст,стр,ед,мр
+пз b ПРИЧАСТИЕ од,но,нст,стр,ед,жр,им
+пи b ПРИЧАСТИЕ од,но,нст,стр,ед,жр,рд
+пй b ПРИЧАСТИЕ од,но,нст,стр,ед,жр,дт
+пк b ПРИЧАСТИЕ од,но,нст,стр,ед,жр,вн
+пл b ПРИЧАСТИЕ од,но,нст,стр,ед,жр,тв
+пм b ПРИЧАСТИЕ од,но,нст,стр,ед,жр,пр
+пн b КР_ПРИЧАСТИЕ од,но,нст,стр,ед,жр
+по b ПРИЧАСТИЕ од,но,нст,стр,ед,ср,им
+пп b ПРИЧАСТИЕ од,но,нст,стр,ед,ср,рд
+пр b ПРИЧАСТИЕ од,но,нст,стр,ед,ср,дт
+пс b ПРИЧАСТИЕ од,но,нст,стр,ед,ср,вн
+пт b ПРИЧАСТИЕ од,но,нст,стр,ед,ср,тв
+пу b ПРИЧАСТИЕ од,но,нст,стр,ед,ср,пр
+пф b КР_ПРИЧАСТИЕ од,но,нст,стр,ед,ср
+пх b ПРИЧАСТИЕ од,но,нст,стр,мн,им
+пц b ПРИЧАСТИЕ од,но,нст,стр,мн,рд
+пч b ПРИЧАСТИЕ од,но,нст,стр,мн,дт
+пш b ПРИЧАСТИЕ од,нст,стр,мн,вн
+Лм b ПРИЧАСТИЕ но,нст,стр,мн,вн
+пщ b ПРИЧАСТИЕ од,но,нст,стр,мн,тв
+пы b ПРИЧАСТИЕ од,но,нст,стр,мн,пр
+пэ b КР_ПРИЧАСТИЕ од,но,нст,стр,мн
+
+//  страдательное причастие прошедшего времени
+са b ПРИЧАСТИЕ од,но,прш,стр,ед,мр,им
+сб b ПРИЧАСТИЕ од,но,прш,стр,ед,мр,рд
+св b ПРИЧАСТИЕ од,но,прш,стр,ед,мр,дт
+сг b ПРИЧАСТИЕ од,прш,стр,ед,мр,вн
+Ле b ПРИЧАСТИЕ но,прш,стр,ед,мр,вн
+сд b ПРИЧАСТИЕ од,но,прш,стр,ед,мр,тв
+се b ПРИЧАСТИЕ од,но,прш,стр,ед,мр,пр
+сж b КР_ПРИЧАСТИЕ од,но,прш,стр,ед,мр
+сз b ПРИЧАСТИЕ од,но,прш,стр,ед,жр,им
+си b ПРИЧАСТИЕ од,но,прш,стр,ед,жр,рд
+сй b ПРИЧАСТИЕ од,но,прш,стр,ед,жр,дт
+ск b ПРИЧАСТИЕ од,но,прш,стр,ед,жр,вн
+сл b ПРИЧАСТИЕ од,но,прш,стр,ед,жр,тв
+см b ПРИЧАСТИЕ од,но,прш,стр,ед,жр,пр
+сн b КР_ПРИЧАСТИЕ од,но,прш,стр,ед,жр
+со b ПРИЧАСТИЕ од,но,прш,стр,ед,ср,им
+сп b ПРИЧАСТИЕ од,но,прш,стр,ед,ср,рд
+ср b ПРИЧАСТИЕ од,но,прш,стр,ед,ср,дт
+сс b ПРИЧАСТИЕ од,но,прш,стр,ед,ср,вн
+ст b ПРИЧАСТИЕ од,но,прш,стр,ед,ср,тв
+су b ПРИЧАСТИЕ од,но,прш,стр,ед,ср,пр
+сф b КР_ПРИЧАСТИЕ од,но,прш,стр,ед,ср
+сх b ПРИЧАСТИЕ од,но,прш,стр,мн,им
+сц b ПРИЧАСТИЕ од,но,прш,стр,мн,рд
+сч b ПРИЧАСТИЕ од,но,прш,стр,мн,дт
+сш b ПРИЧАСТИЕ од,прш,стр,мн,вн
+Ло b ПРИЧАСТИЕ но,прш,стр,мн,вн
+сщ b ПРИЧАСТИЕ од,но,прш,стр,мн,тв
+сы b ПРИЧАСТИЕ од,но,прш,стр,мн,пр
+сэ b КР_ПРИЧАСТИЕ од,но,прш,стр,мн
+
+
+ча e МС 1л,ед,им
+чб e МС 1л,ед,рд
+чв e МС 1л,ед,дт
+чг e МС 1л,ед,вн
+чд e МС 1л,ед,тв
+че e МС 1л,ед,пр
+чж e МС 1л,мн,им
+чз e МС 1л,мн,рд
+чи e МС 1л,мн,дт
+чй e МС 1л,мн,вн
+чк e МС 1л,мн,тв
+чл e МС 1л,мн,пр
+чм e МС 2л,ед,им
+чн e МС 2л,ед,рд
+чо e МС 2л,ед,дт
+чп e МС 2л,ед,вн
+чр e МС 2л,ед,тв
+чс e МС 2л,ед,пр
+чт e МС 2л,мн,им
+чу e МС 2л,мн,рд
+чф e МС 2л,мн,дт
+чх e МС 2л,мн,вн
+чц e МС 2л,мн,тв
+чч e МС 2л,мн,пр
+ша e МС 3л,мр,ед,им
+шб e МС 3л,мр,ед,рд
+шв e МС 3л,мр,ед,дт
+шг e МС 3л,мр,ед,вн
+шд e МС 3л,мр,ед,тв
+ше e МС 3л,мр,ед,пр
+шж e МС 3л,жр,ед,им
+шз e МС 3л,жр,ед,рд
+ши e МС 3л,жр,ед,дт
+шй e МС 3л,жр,ед,вн
+шк e МС 3л,жр,ед,тв
+шл e МС 3л,жр,ед,пр
+шм e МС 3л,ср,ед,им
+шн e МС 3л,ср,ед,рд
+шо e МС 3л,ср,ед,дт
+шп e МС 3л,ср,ед,вн
+шр e МС 3л,ср,ед,тв
+шс e МС 3л,ср,ед,пр
+шт e МС 3л,мн,им
+шу e МС 3л,мн,рд
+шф e МС 3л,мн,дт
+шх e МС 3л,мн,вн
+шц e МС 3л,мн,тв
+шч e МС 3л,мн,пр
+ща e МС мр,ед,им
+щб e МС мр,ед,рд
+щв e МС мр,ед,дт
+щг e МС мр,ед,вн
+щд e МС мр,ед,тв
+ще e МС мр,ед,пр
+щж e МС жр,ед,им
+щз e МС жр,ед,рд
+щи e МС жр,ед,дт
+щй e МС жр,ед,вн
+щк e МС жр,ед,тв
+щл e МС жр,ед,пр
+щм e МС ср,ед,им
+щн e МС ср,ед,рд
+що e МС ср,ед,дт
+щп e МС ср,ед,вн
+щр e МС ср,ед,тв
+щс e МС ср,ед,пр
+щт e МС мн,им
+щу e МС мн,рд
+щф e МС мн,дт
+щх e МС мн,вн
+щц e МС мн,тв
+щч e МС мн,пр
+щщ e МС рд
+щы e МС дт
+щэ e МС вн
+щю e МС тв
+щя e МС пр
+ыа f МС-П мр,ед,им,од,но
+ыб f МС-П мр,ед,рд,од,но
+ыв f МС-П мр,ед,дт,од,но
+ыг f МС-П мр,ед,вн,но
+Лф f МС-П мр,ед,вн,од
+ыд f МС-П мр,ед,тв,од,но
+ые f МС-П мр,ед,пр,од,но
+ыж f МС-П жр,ед,им,од,но
+ыз f МС-П жр,ед,рд,од,но
+ыи f МС-П жр,ед,дт,од,но
+ый f МС-П жр,ед,вн,од,но
+ык f МС-П жр,ед,тв,од,но
+ыл f МС-П жр,ед,пр,од,но
+ым f МС-П ср,ед,им,од,но
+ын f МС-П ср,ед,рд,од,но
+ыо f МС-П ср,ед,дт,од,но
+ып f МС-П ср,ед,вн,од,но
+ыр f МС-П ср,ед,тв,од,но
+ыс f МС-П ср,ед,пр,од,но
+ыт f МС-П мн,им,од,но
+ыу f МС-П мн,рд,од,но
+ыф f МС-П мн,дт,од,но
+ых f МС-П мн,вн,но
+Лх f МС-П мн,вн,од
+ыц f МС-П мн,тв,од,но
+ыч f МС-П мн,пр,од,но
+ыш f МС-П 0,од,но
+ыщ g МС-ПРЕДК ед,рд
+ыы g МС-ПРЕДК ед,дт
+ыэ g МС-ПРЕДК ед,вн
+ыю g МС-ПРЕДК ед,тв
+
+// это анал. форма "не о  ком"
+ыь g МС-ПРЕДК ед,пр
+
+ыя g МС-ПРЕДК
+эа h ЧИСЛ им
+эб h ЧИСЛ рд
+эв h ЧИСЛ дт
+эг h ЧИСЛ вн
+эд h ЧИСЛ тв
+эе h ЧИСЛ пр
+
+Ца h ЧИСЛ им,арх
+Цб h ЧИСЛ рд,арх
+Цв h ЧИСЛ дт,арх
+Цг h ЧИСЛ вн,арх
+Цд h ЧИСЛ тв,арх
+Це h ЧИСЛ пр,арх
+
+
+эж h ЧИСЛ мр,им
+эз h ЧИСЛ мр,рд
+эи h ЧИСЛ мр,дт
+эй h ЧИСЛ мр,вн
+эк h ЧИСЛ мр,тв
+эл h ЧИСЛ мр,пр
+эм h ЧИСЛ жр,им
+эн h ЧИСЛ жр,рд
+эо h ЧИСЛ жр,дт
+эп h ЧИСЛ жр,вн
+эр h ЧИСЛ жр,тв
+эс h ЧИСЛ жр,пр
+эт h ЧИСЛ ср,им
+эу h ЧИСЛ ср,рд
+эф h ЧИСЛ ср,дт
+эх h ЧИСЛ ср,вн
+эц h ЧИСЛ ср,тв
+эч h ЧИСЛ ср,пр
+эш h ЧИСЛ сравн
+юа i ЧИСЛ-П мр,ед,им,од,но
+юб i ЧИСЛ-П мр,ед,рд,од,но
+юв i ЧИСЛ-П мр,ед,дт,од,но
+юг i ЧИСЛ-П мр,ед,вн,но
+Лт i ЧИСЛ-П мр,ед,вн,од
+юд i ЧИСЛ-П мр,ед,тв,од,но
+юе i ЧИСЛ-П мр,ед,пр,од,но
+юж i ЧИСЛ-П жр,ед,им,од,но
+юз i ЧИСЛ-П жр,ед,рд,од,но
+юи i ЧИСЛ-П жр,ед,дт,од,но
+юй i ЧИСЛ-П жр,ед,вн,од,но
+юк i ЧИСЛ-П жр,ед,тв,од,но
+юл i ЧИСЛ-П жр,ед,пр,од,но
+юм i ЧИСЛ-П ср,ед,им,од,но
+юн i ЧИСЛ-П ср,ед,рд,од,но
+юо i ЧИСЛ-П ср,ед,дт,од,но
+юп i ЧИСЛ-П ср,ед,вн,од,но
+юр i ЧИСЛ-П ср,ед,тв,од,но
+юс i ЧИСЛ-П ср,ед,пр,од,но
+ют i ЧИСЛ-П мн,им,од,но
+юу i ЧИСЛ-П мн,рд,од,но
+юф i ЧИСЛ-П мн,дт,од,но
+юх i ЧИСЛ-П мн,вн,но
+Лу i ЧИСЛ-П мн,вн,од
+юц i ЧИСЛ-П мн,тв,од,но
+юч i ЧИСЛ-П мн,пр,од,но
+ющ i ЧИСЛ-П рд,од,но
+
+//  наречия
+яа j Н
+ян j Н вопр
+яо j Н указат
+яп j Н разг
+
+// "мне интересно","мне было страшно"
+яб k ПРЕДК нст
+як k ПРЕДК прш
+ял k ПРЕДК 
+// мне лучше
+яр k ПРЕДК сравн,нст
+
+//  "вот", "хрусть" (нет анал. форм)
+ям k ПРЕДК 0
+
+яв l ПРЕДЛ
+яг m ПОСЛ
+яд n СОЮЗ
+яе o МЕЖД
+яё o МЕЖД разг
+яж p ЧАСТ
+яз q ВВОДН
+яй s ФРАЗ
+Пп b Г стр,буд,1л,ед
+Пр b Г стр,буд,1л,мн
+Пс b Г стр,буд,2л,ед
+Пт b Г стр,буд,2л,мн
+Пу b Г стр,буд,3л,ед
+Пф b Г стр,буд,3л,мн
+
+
+
+
+// общие граммемы (словообразовательные)
+Уа a * лок
+// Уб a * 
+// Ув a * 
+// Уг a * 
+// Уд a * 
+Уе a * кач
+Уж a * дфст
+Уз a * дфст,орг
+Уи a * дфст,лок
+//Ук a * 
+Ул a * св,пе
+Ум a * св,нп
+Ун a * нс,пе
+Уо a * нс,нп
+Уп a * св,нс,пе
+Ур a * св,нс,нп
+
+
+// для безличных глаголов
+Ус a * нс
+Ут a * св
+
+Уф a * жарг
+Ух a * опч
+Уч a * жарг,опч
+Уц a * орг,жарг
+Уш a * лок,жарг
+
+Ущ a * но,лок
+Уь a * но,орг
+Уы a * од,фам
+Уъ a * но,дфст,лок
+Уэ a * но,дфст,орг
+Ую a * но,жарг
+Уя a * но,опч,
+Фа a * но,
+Фб a * од,
+Фв a * орг,жарг,но
+Фг a * дфст,но
+Фд a * дфст,од
+Фж a * од,жарг
+Фз a * имя,притяж
+Фи a * притяж
+Фк a * св,пе,разг
+Фл a * св,нп,разг
+Фн a * нс,пе,разг
+Фо a * нс,нп,разг
+Фп a * но,разг
+Фр a * од,разг
+Фс a * св,пе,жарг
+Фт a * св,нп,жарг
+Фу a * нс,пе,жарг
+Фф a * нс,нп,жарг
+Фх a * разг
+Фц a * арх
+Фч a * св,пе,арх
+Фш a * св,нп,арх
+Фщ a * нс,пе,арх
+Фь a * нс,нп,арх
+Фы a * но,арх
+Фъ a * од,арх
+Фэ a * нс,арх
+Фю a * св,арх
+Фя a * кач,арх
+Фё a * но,од
+Ха a * од,опч,
+Хб a * лок,опч,
+
+
+
+яю F С мр,жр,ср,ед,им,рд,дт,вн,тв,пр
+яя F С мр,жр,ср,,ед,мн,им,рд,дт,вн,тв,пр
 --luacheck: no self
 local lang = require "morph/lang-en"
 require "parser/mp"
@@ -8758,9 +7584,6 @@ mp.msg.ACCESS2 = "{#Thesecond} {#is/#second} not accessible from here."
 
 mp.msg.Look.HEREIS = "Here is"
 mp.msg.Look.HEREARE = "Here are"
-mp.msg.Look.SUPPORTER = function(o)
-	p ("On ",o:the_noun())
-end
 
 mp.msg.NOROOM = function(w)
 	if w == std.me() then
@@ -9161,6 +7984,11 @@ Verb { "#Drop",
 	"{noun}/held : Drop",
 	"{noun}/held in|into|down {noun}/inside : Insert",
 	"{noun}/held on|onto {noun} : PutOn",
+}
+
+Verb { "#Insert",
+	"insert",
+	"{noun}/held in|into|inside {noun}/inside : Insert",
 }
 
 Verb { "#Put",
@@ -9589,47 +8417,6 @@ mp.cutscene.help = fmt.em "<more>";
 std.dlg.default_Verb = "examine"
 
 std.player.word = "you/plural,second"
--- react_ and postreact_ event module for reactions near the object
-
---[[ include 'listen'
-obj {
-	nam = 'npc';
-	react_Take = "Player in this room is taking something. Reject!";
-}:listen();
-]]--
-
---luacheck: globals mp
---luacheck: no self
-game.react_list = std.list {}
-
-function game:before_Any(ev, ...)
-	for _, v in ipairs(game.react_list) do
-		if v:inroom() == std.here() then
-			local r = mp:runmethods('react', ev, v, ...)
-			if r ~= false then
-				return
-			end
-		end
-	end
-	return false
-end
-
-function game:post_Any(ev, ...)
-	for _, v in ipairs(game.react_list) do
-		if v:inroom() == std.here() then
-			local r = mp:runmethods('postreact', ev, v, ...)
-			if r ~= false then
-				return
-			end
-		end
-	end
-	return false
-end
-
-function std.obj.listen(s)
-	game.react_list:add(s)
-	return s
-end
 local curdir = std.getinfo(1).source:gsub("^(.+[\\/])[^\\/]+$", "%1"):gsub("^@", "");
 
 require "fmt"
@@ -9826,6 +8613,9 @@ end
 
 function input:key(press, key)
 	local mod
+	if mp:noparser() then
+		return false
+	end
 	if key:find("alt") then
 		mp.alt = press
 		mod = true
@@ -9866,7 +8656,7 @@ mp = std.obj {
 	detailed_inv = false;
 	daemons = std.list {};
 	{
-		version = "1.9";
+		version = "1.10";
 		cache = { tokens = {}, nouns = false };
 		scope = std.list {};
 		logfile = false;
@@ -9972,7 +8762,14 @@ function mp:key(key)
 		self:autoscript()
 		return true
 	end
-
+	if key == 'home' or key == '[7]' then
+		self.cur = 1
+		return true
+	end
+	if key == 'end' or key == '[1]' then
+		self.cur = self.inp:len() + 1
+		return true
+	end
 	if key == 'left' then
 		return self:inp_left()
 	end
@@ -11279,12 +10076,12 @@ function mp:match(verb, w, compl)
 
 	for k, v in ipairs(matches) do
 		v.nr = k
---[[
+if false then
 		print("-----------", k)
 		for kk, vv in ipairs(v) do
 			print(vv)
 		end
-]]--
+end
 	end
 
 	table.sort(matches,
@@ -12442,6 +11239,1239 @@ end
 function iface:title(t)
 	return(iface:bold( mrd.lang.cap(t)))
 end
+-- react_ and postreact_ event module for reactions near the object
+
+--[[ include 'listen'
+obj {
+	nam = 'npc';
+	react_Take = "Player in this room is taking something. Reject!";
+}:listen();
+]]--
+
+--luacheck: globals mp
+--luacheck: no self
+game.react_list = std.list {}
+
+function game:before_Any(ev, ...)
+	for _, v in ipairs(game.react_list) do
+		if v:inroom() == std.here() then
+			local r = mp:runmethods('react', ev, v, ...)
+			if r ~= false then
+				return
+			end
+		end
+	end
+	return false
+end
+
+function game:post_Any(ev, ...)
+	for _, v in ipairs(game.react_list) do
+		if v:inroom() == std.here() then
+			local r = mp:runmethods('postreact', ev, v, ...)
+			if r ~= false then
+				return
+			end
+		end
+	end
+	return false
+end
+
+function std.obj.listen(s)
+	game.react_list:add(s)
+	return s
+end
+--luacheck: no self
+local lang = require "morph/lang-ru"
+require "parser/mp"
+require "parser/mplib"
+local mp = _'@metaparser'
+
+std.mod_init(
+	function()
+	mp:init(lang)
+end)
+game.dsc = function()
+	p ([[МЕТАПАРСЕР3 Версия: ]]..mp.version.."^")
+	p [[http://instead-hub.github.io^^
+Если вам необходима справка по игре, наберите "помощь".
+^]]
+end
+-- local utf = mp.utf
+
+_'@all'.word = -"всё/~од"
+
+_'@darkness'.word = -"тьма,темнота,темень"
+_'@darkness'.before_Any = "Полная, кромешная тьма."
+_'@darkness':attr 'persist'
+
+_'@n_to'.word = -"север";
+_'@ne_to'.word = -"северо-восток";
+_'@e_to'.word = -"восток";
+_'@se_to'.word = -"юго-восток";
+_'@s_to'.word = -"юг";
+_'@sw_to'.word = -"юго-запад";
+_'@w_to'.word = -"запад";
+_'@nw_to'.word = -"северо-запад";
+_'@u_to'.word = -"наверх,вверх,верх";
+_'@d_to'.word = -"вниз,низ";
+_'@out_to'.word = -"наружу,выход,назад";
+_'@in_to'.word = -"внутрь,вход"
+
+mp.shorten = {
+	["с"] = "север";
+	["в"] = "восток";
+	["з"] = "запад";
+	["ю"] = "юг";
+	["св"] = "северо-восток";
+	["юв"] = "юго-восток";
+	["юз"] = "юго-запад";
+	["сз"] = "северо-запад";
+	["вн"] = "вниз";
+	["вв"] = "вверх";
+}
+
+mp.shorten_expert = {
+	["и"] = "инвентарь";
+	["ж"] = "ждать";
+	["о"] = "осмотреть";
+	["осм"] = "осмотреть";
+	["вкл"] = "включить";
+	["выкл"] = "выключить";
+	["см"] = "смотреть";
+}
+
+function mp:skip_filter(w)
+	for _, v in ipairs(w) do
+		if v == 'не' or v == 'кроме' or v == 'вместо' then
+			return false
+		end
+	end
+	return true
+end
+
+_'@compass'.before_Default = 'Попробуйте глагол "идти".'
+
+function mp.msg.SCORE(d)
+	if d > 0 then
+		pn ("{$fmt em|(Счёт увеличился на ", d, ")}")
+	else
+		pn ("{$fmt em|(Счёт уменьшился на ", d, ")}")
+	end
+end
+mp.door.word = -"дверь";
+mp.msg.TITLE_SCORE = "Счёт: "
+mp.msg.TITLE_TURNS = "Ходы: "
+mp.msg.YES = "Да"
+mp.msg.WHEN_DARK = "Кромешная тьма."
+mp.msg.UNKNOWN_THEDARK = "Возможно, это потому что в темноте ничего не видно?"
+mp.msg.COMPASS_NOWAY = "Этот путь недоступен."
+mp.msg.COMPASS_EXAM_NO = "В этом направлении не видно ничего примечательного."
+mp.msg.ENUM = "шт."
+mp.msg.CUTSCENE_HELP = "Для продолжения нажмите <ввод> или введите {$fmt em|дальше}."
+mp.msg.DLG_HELP = "Для выбора фразы введите цифру."
+mp.msg.NO_ALL = "Это действие нельзя применить на всё."
+mp.msg.DROPPING_ALL = function(w)
+	pn (iface:em("(бросить "..w:noun'вн'..")"))
+end
+mp.msg.TAKING_ALL = function(w)
+	pn (iface:em("(взять "..w:noun'вн'..")"))
+end
+mp.msg.TAKE_BEFORE = function(w)
+	pn (iface:em("(сначала взяв "..w:noun'вн'..")"))
+end
+mp.msg.DISROBE_BEFORE = function(w)
+	pn (iface:em("(сначала сняв "..w:noun'вн'..")"))
+end
+
+mp.msg.CLOSE_BEFORE = function(w)
+	pn (iface:em("(сначала закрыв "..w:noun'вн'..")"))
+end
+
+--"находиться"
+mp.msg.SCENE = "{#Me} {#word/находиться,#me,нст} {#if_has/#here,supporter,на,в} {#here/пр,2}.";
+mp.msg.INSIDE_SCENE = "{#Me} {#word/находиться,#me,нст} {#if_has/#where,supporter,на,в} {#where/пр,2}.";
+mp.msg.TITLE_INSIDE = "{#if_has/#where,supporter,на,в} {#where/пр,2}";
+
+mp.msg.COMPASS_EXAM = function(dir, ob)
+	if dir == 'u_to' then
+		p "Вверху"
+	elseif dir == 'd_to' then
+		p "Внизу"
+	elseif dir == 'out_to' or dir == 'in_to' then
+		p "В этом направлении"
+	else
+		p "На {#first/пр,2}"
+	end
+	if ob:hint'plural' then
+		p "находятся"
+	else
+		p "находится"
+	end
+	p (ob:noun(),".")
+end
+
+mp.msg.enter = "<ввод>"
+mp.msg.EMPTY = 'Простите?'
+mp.msg.UNKNOWN_VERB = "Непонятный глагол"
+mp.msg.UNKNOWN_VERB_HINT = "Возможно, вы имели в виду"
+mp.msg.INCOMPLETE = "Нужно дополнить предложение."
+mp.msg.INCOMPLETE_NOUN = "К чему вы хотите применить команду"
+mp.msg.INCOMPLETE_SECOND_NOUN = "Уточните команду:"
+mp.msg.UNKNOWN_OBJ = function(w)
+	if not w then
+		p "Об этом предмете ничего не известно."
+	else
+		p "Об этом предмете ничего не известно "
+		p ("(",w,").")
+	end
+end
+mp.msg.NOTHING_OBJ = "Ничего подходящего нет."
+mp.msg.UNKNOWN_WORD = function(w)
+	if not w then
+		p "Фраза не распознана."
+	else
+		p "Фраза не распознана "
+		p ("(",w,"?).")
+	end
+end
+mp.msg.HINT_WORDS = "Может быть"
+mp.msg.HINT_OR = "или"
+mp.msg.HINT_AND = "и"
+mp.msg.AND = "и"
+mp.msg.MULTIPLE = "Тут есть"
+mp.msg.LIVE_ACTION = function(w)
+	p (w:It'дт'," это не понравится.")
+end
+mp.msg.NO_LIVE_ACTION = "Действие применимо только к одушевлённым объектам."
+
+mp.msg.NOTINV = function(t)
+	p (lang.cap(t:noun'вн') .. " сначала нужно взять.")
+end
+--"надет"
+mp.msg.WORN = function(w)
+	local hint = w:gram().hint
+	pr (" (",mp.mrd:word('надет/' .. hint), ")")
+end
+--"открыт"
+mp.msg.OPEN = function(w)
+	local hint = w:gram().hint
+	pr (" (",mp.mrd:word('открыт/' .. hint), ")")
+end
+mp.msg.EXITBEFORE = "Возможно, {#me/дт} нужно сначала {#if_has/#where,supporter,слезть с {#where/рд}.,покинуть {#where/вн}.}"
+
+mp.default_Event = "Exam"
+mp.default_Verb = "осмотреть"
+
+--"доступен"
+mp.msg.ACCESS1 = "{#First} отсюда не{#word/доступен,#first}."
+mp.msg.ACCESS2 = "{#Second} отсюда не{#word/доступен,#second}."
+
+mp.msg.Look.HEREIS = "Здесь находится"
+mp.msg.Look.HEREARE = "Здесь находятся"
+
+mp.msg.NOROOM = function(w)
+	if w == std.me() then
+		p ("У {#me/рд} слишком много вещей.")
+	elseif w:has'supporter' then
+		p ("На ", w:noun'пр,2', " больше нет места.")
+	else
+		p ("В ", w:noun'пр,2', " больше нет места.")
+	end
+end
+--"включён"
+--"выключен"
+mp.msg.Exam.SWITCHSTATE = "{#First} сейчас {#if_has/#first,on,{#word/включён,#first},{#word/выключен,#first}}."
+mp.msg.Exam.NOTHING = "ничего нет."
+mp.msg.Exam.IS = "находится"
+mp.msg.Exam.ARE = "находятся"
+mp.msg.Exam.IN = "В {#first/пр,2}"
+mp.msg.Exam.ON = "На {#first/пр,2}"
+--"видеть"
+mp.msg.Exam.DEFAULT = "{#Me} не {#word/видеть,#me,нст} {#vo/{#first/пр}} ничего необычного.";
+mp.msg.Exam.SELF = "{#Me} не {#word/видеть,#me,нст} в себе ничего необычного.";
+
+--"открыт"
+mp.msg.Exam.OPENED = "{#First} {#word/открыт,нст,#first}."
+--"закрыт"
+mp.msg.Exam.CLOSED = "{#First} {#word/закрыт,нст,#first}."
+--"находить"
+mp.msg.LookUnder.NOTHING = "{#Me} не {#word/находить,нст,#me} под {#first/тв} ничего интересного."
+--"могу"
+--"закрыт"
+--"держать"
+--"залезать"
+mp.msg.Enter.ALREADY = "{#Me} уже {#if_has/#first,supporter,на,в} {#first/пр,2}."
+mp.msg.Enter.INV = "{#Me} не {#word/могу,#me,нст} зайти в то, что {#word/держать,#me,нст} в руках."
+mp.msg.Enter.IMPOSSIBLE = "Но в/на {#first/вн} невозможно войти, встать, сесть или лечь."
+mp.msg.Enter.CLOSED = "{#First} {#word/закрыт,#first}, и {#me} не {#word/мочь,#me,нст} зайти туда."
+mp.msg.Enter.ENTERED = "{#Me} {#word/залезать,нст,#me} {#if_has/#first,supporter,на,в} {#first/вн}."
+mp.msg.Enter.DOOR_NOWHERE = "{#First} никуда не ведёт."
+--"закрыт"
+mp.msg.Enter.DOOR_CLOSED = "{#First} {#word/закрыт,#first}."
+
+mp.msg.Walk.ALREADY = mp.msg.Enter.ALREADY
+mp.msg.Walk.WALK = "Но {#first} и так находится здесь."
+mp.msg.Walk.NOWHERE = "Куда именно?"
+mp.msg.Walk.INV = "Но {#first} у {#me/рд} с собой."
+
+mp.msg.Enter.EXITBEFORE = "Сначала нужно {#if_has/#where,supporter,слезть с {#where/рд}.,покинуть {#where/вн}.}"
+
+mp.msg.Exit.NOTHERE = "Но {#me} сейчас не {#if_has/#first,supporter,на,в} {#first/пр,2}."
+mp.msg.Exit.NOWHERE = "Но {#me/дт} некуда выходить."
+mp.msg.Exit.CLOSED = "Но {#first} {#word/закрыт,#first}."
+
+--"покидать"
+--"слезать"
+mp.msg.Exit.EXITED = "{#Me} {#if_has/#first,supporter,{#word/слезать с,#me,нст} {#first/рд},{#word/покидать,#me,нст} {#first/вн}}."
+
+mp.msg.GetOff.NOWHERE = "Но {#me/дт} не с чего слезать."
+
+mp.msg.Inv.NOTHING = "У {#me/рд} с собой ничего нет."
+mp.msg.Inv.INV = "У {#me/рд} с собой"
+
+--"открывать"
+mp.msg.Open.OPEN = "{#Me} {#word/открывать,нст,#me} {#first/вн}."
+mp.msg.Open.NOTOPENABLE = "{#First/вн} невозможно открыть."
+--"открыт"
+mp.msg.Open.WHENOPEN = "{#First/} уже {#word/открыт,#first}."
+--"заперт"
+mp.msg.Open.WHENLOCKED = "Похоже, что {#first/} {#word/заперт,#first}."
+
+--"закрывать"
+mp.msg.Close.CLOSE = "{#Me} {#word/закрывать,нст,#me} {#first/вн}."
+mp.msg.Close.NOTOPENABLE = "{#First/вн} невозможно закрыть."
+--"закрыт"
+mp.msg.Close.WHENCLOSED = "{#First/} уже {#word/закрыт,#first}."
+
+mp.msg.Lock.IMPOSSIBLE = "{#First/вн} невозможно запереть."
+--"заперт"
+mp.msg.Lock.LOCKED = "{#First} уже {#word/заперт,#first}."
+--"закрыть"
+mp.msg.Lock.OPEN = "Сначала необходимо закрыть {#first/вн}."
+--"подходит"
+mp.msg.Lock.WRONGKEY = "{#Second} не {#word/подходит,#second} к замку."
+--"запирать"
+mp.msg.Lock.LOCK = "{#Me} {#word/запирать,#me,нст} {#first/вн}."
+
+mp.msg.Unlock.IMPOSSIBLE = "{#First/вн} невозможно отпереть."
+--"заперт"
+mp.msg.Unlock.NOTLOCKED = "{#First} не {#word/заперт,#first}."
+--"подходит"
+mp.msg.Unlock.WRONGKEY = "{#Second} не {#word/подходит,нст,#second} к замку."
+--"отпирать"
+mp.msg.Unlock.UNLOCK = "{#Me} {#word/отпирать,#me,нст} {#first/вн}."
+
+mp.msg.Take.HAVE = "У {#me/вн} и так {#firstit} уже есть."
+mp.msg.Take.TAKE = "{#Me} {#verb/take} {#first/вн}."
+mp.msg.Take.SELF = "{#Me} есть у {#me/рд}."
+--"находиться"
+mp.msg.Take.WHERE = "Нельзя взять то, {#if_hint/#where,supporter,на,в} чём {#me} {#word/находиться,#me}."
+
+mp.msg.Take.LIFE = "{#First/дт} это вряд ли понравится."
+--"закреплён"
+mp.msg.Take.STATIC = "{#First} жестко {#word/закреплён,#first}."
+mp.msg.Take.SCENERY = "{#First/вн} невозможно взять."
+
+--"надет"
+mp.msg.Take.WORN = "{#First} {#word/надет,#first} на {#firstwhere/вн}."
+mp.msg.Take.PARTOF = "{#First} {#if_hint/#first,plural,являются,является} частью {#firstwhere/рд}."
+
+mp.msg.Remove.WHERE = "{#First} не находится {#if_has/#second,supporter,на,в} {#second/пр,2}."
+mp.msg.Remove.REMOVE = "{#First} {#if_has/#second,supporter,поднят,извлечён из} {#second/рд}."
+
+mp.msg.Drop.SELF = "У {#me/рд} не хватит ловкости."
+mp.msg.Drop.WORN = "{#First/вн} сначала нужно снять."
+--"помещать"
+mp.msg.Insert.INSERT = "{#Me} {#word/помещать,нст,#me} {#first/вн} в {#second/вн}."
+mp.msg.Insert.CLOSED = "{#Second} {#word/закрыт,#second}."
+mp.msg.Insert.NOTCONTAINER = "{#Second} не {#if_hint/#second,plural,могут,может} что-либо содержать."
+mp.msg.Insert.WHERE = "Нельзя поместить {#first/вн} внутрь себя."
+mp.msg.Insert.ALREADY = "Но {#first} уже и так {#word/находиться,#first} там."
+mp.msg.PutOn.NOTSUPPORTER = "Класть что-либо на {#second/вн} бессмысленно."
+--"класть"
+mp.msg.PutOn.PUTON = "{#Me} {#word/класть,нст,#me} {#first/вн} на {#second/вн}."
+mp.msg.PutOn.WHERE = "Нельзя поместить {#first/вн} на себя."
+
+--"брошен"
+mp.msg.Drop.DROP = "{#First} {#word/брошен,#first}."
+
+mp.msg.ThrowAt.NOTLIFE = "Бросать {#first/вн} в {#second/вн} бесполезно."
+mp.msg.ThrowAt.THROW = "У {#me/рд} не хватает решимости бросить {#first/вн} в {#second/вн}."
+
+
+mp.msg.Wear.NOTCLOTHES = "Надеть {#first/вн} невозможно."
+mp.msg.Wear.WORN = "{#First} уже на {#me/дт}."
+--"надевать"
+mp.msg.Wear.WEAR = "{#Me} {#word/надевать,#me,нст} {#first/вн}."
+
+mp.msg.Disrobe.NOTWORN = "{#First} не на {#me/дт}."
+--"снимать"
+mp.msg.Disrobe.DISROBE = "{#Me} {#word/снимать,#me,нст} {#first/вн}."
+
+mp.msg.SwitchOn.NONSWITCHABLE = "{#First/вн} невозможно включить."
+--"включён"
+mp.msg.SwitchOn.ALREADY = "{#First} уже {#word/включён,#first}."
+--"включать"
+mp.msg.SwitchOn.SWITCHON = "{#Me} {#word/включать,#me,нст} {#first/вн}."
+
+mp.msg.SwitchOff.NONSWITCHABLE = "{#First/вн} невозможно выключить."
+--"выключён"
+mp.msg.SwitchOff.ALREADY = "{#First} уже {#word/выключён,#first}."
+--"выключать"
+mp.msg.SwitchOff.SWITCHOFF = "{#Me} {#word/выключать,#me,нст} {#first/вн}."
+
+--"годится"
+mp.msg.Eat.NOTEDIBLE = "{#First} не {#word/годится,#first} в пищу."
+mp.msg.Taste.TASTE = "Никакого необычного вкуса нет."
+
+--"съедать"
+mp.msg.Eat.EAT = "{#Me} {#word/съедать,нст,#me} {#first/вн}."
+mp.msg.Drink.IMPOSSIBLE = "Выпить {#first/вн} невозможно."
+
+mp.msg.Push.STATIC = "{#First/вн} трудно сдвинуть с места."
+mp.msg.Push.SCENERY = "{#First/вн} двигать невозможно."
+mp.msg.Push.PUSH = "Ничего не произошло."
+
+mp.msg.Pull.STATIC = "{#First/вн} трудно сдвинуть с места."
+mp.msg.Pull.SCENERY = "{#First/вн} двигать невозможно."
+mp.msg.Pull.PULL = "Ничего не произошло."
+
+mp.msg.Turn.STATIC = "{#First/вн} трудно сдвинуть с места."
+mp.msg.Turn.SCENERY = "{#First/вн} двигать невозможно."
+mp.msg.Turn.TURN = "Ничего не произошло."
+
+mp.msg.Wait.WAIT = "Проходит немного времени."
+
+mp.msg.Touch.LIVE = "Не стоит давать волю рукам."
+mp.msg.Touch.TOUCH = "Никаких необычных ощущений нет."
+mp.msg.Touch.MYSELF = "{#Me} на месте."
+
+mp.msg.Rub.RUB = "Тереть {#first/вн} бессмысленно."
+mp.msg.Sing.SING = "С таким слухом и голосом как у {#me/рд} этого лучше не делать."
+
+mp.msg.Give.MYSELF = "{#First} и так у {#me/рд} есть."
+mp.msg.Give.GIVE = "{#Second/вн} это не заинтересовало."
+mp.msg.Show.SHOW = "{#Second/вн} это не впечатлило."
+
+mp.msg.Burn.BURN = "Поджигать {#first/вн} бессмысленно."
+mp.msg.Burn.BURN2 = "Поджигать {#first/вн} {#second/тв} бессмысленно."
+--"поверь"
+mp.msg.Wake.WAKE = "Это не сон, а явь."
+mp.msg.WakeOther.WAKE = "Будить {#first/вн} не стоит."
+mp.msg.WakeOther.NOTLIVE = "Бессмысленно будить {#first/вн}."
+
+mp.msg.PushDir.PUSH = "Передвигать это нет смысла."
+
+mp.msg.Kiss.NOTLIVE = "Странное желание."
+mp.msg.Kiss.KISS = "{#Firstit/дт} это может не понравиться."
+mp.msg.Kiss.MYSELF = "Ну уж нет."
+
+mp.msg.Think.THINK = "Отличная идея!"
+mp.msg.Smell.SMELL = "Никакого необычного запаха нет."
+mp.msg.Smell.SMELL2 = "Пахнет как {#first}."
+
+mp.msg.Listen.LISTEN = "Никаких необычных звуков нет."
+--"прислушаться"
+mp.msg.Listen.LISTEN2 = "{#Me} {#word/прислушаться,#me,прш} к {#first/дт}. Никаких необычных звуков нет."
+
+--"выкопать"
+mp.msg.Dig.DIG = "{#Me} ничего не {#word/выкопать,#me,прш}."
+mp.msg.Dig.DIG2 = "Копать {#first/вн} бессмысленно."
+mp.msg.Dig.DIG3 = "Копать {#first/вн} {#second/тв} бессмысленно."
+
+mp.msg.Cut.CUT = "Резать {#first/вн} бессмысленно."
+mp.msg.Cut.CUT2 = "Резать {#first/вн} {#second/тв} бессмысленно."
+
+mp.msg.Tear.TEAR = "Рвать {#first/вн} бессмысленно."
+
+mp.msg.Tie.TIE = "Привязывать {#first/вн} бессмысленно."
+mp.msg.Tie.TIE2 = "Привязывать {#first/вн} к {#second/дт} бессмысленно."
+
+mp.msg.Blow.BLOW = "Дуть на/в {#first/вн} бессмысленно."
+
+mp.msg.Attack.LIFE = "Агрессия к {#first/дт} неоправданна."
+mp.msg.Attack.ATTACK = "Сила есть -- ума не надо?"
+--"хотеть"
+mp.msg.Sleep.SLEEP = "{#Me} не {#word/хотеть,#me,нст} спать."
+mp.msg.Swim.SWIM = "Для этого здесь недостаточно воды."
+mp.msg.Fill.FILL = "Наполнять {#first/вн} бессмысленно."
+--"подпрыгивать"
+mp.msg.Jump.JUMP = "{#Me} глупо {#word/подпрыгивать,#me,нст}."
+mp.msg.JumpOver.JUMPOVER = "Прыгать через {#first/вн} бессмысленно."
+
+--"находить"
+mp.msg.Consult.CONSULT = "{#Me} не {#word/находить,#me,нст} ничего подходящего."
+
+--"помахать"
+mp.msg.WaveHands.WAVE = "{#Me} глупо {#word/помахать,прш,#me} руками."
+mp.msg.Wave.WAVE = "{#Me} глупо {#word/помахать,прш,#me} {#first/тв}."
+
+mp.msg.Talk.SELF = "Беседы не получилось."
+--"уметь"
+mp.msg.Talk.NOTLIVE = "{#First} не {#word/уметь,#first,нст} разговаривать."
+--"отреагировать"
+mp.msg.Talk.LIVE = "{#First} никак не {#word/отреагировать,#first}."
+
+mp.msg.Tell.SELF = "Беседы не получилось."
+
+--"безмолвен"
+mp.msg.Tell.NOTLIVE = "{#First} {#word/безмолвен,#first}."
+--"отреагировать"
+mp.msg.Tell.LIVE = "{#First} никак не {#word/отреагировать,#first}."
+--"нашёл"
+mp.msg.Tell.EMPTY = "{#Me} не {#word/нашёл,#me,прш} что сказать."
+
+--"отвечать"
+mp.msg.Ask.NOTLIVE = "Ответа не последовало."
+--"ответить"
+mp.msg.Ask.LIVE = "{#First} не {#word/ответить,прш,#first}."
+--"придумать"
+mp.msg.Ask.EMPTY = "{#Me} не {#word/придумать,#me,прш} что спросить."
+mp.msg.Ask.SELF = "Хороший вопрос."
+
+--"отвечать"
+mp.msg.Answer.NOTLIVE = "Ответа не последовало."
+--"ответить"
+mp.msg.Answer.LIVE = "{#First} не {#word/ответить,прш,#first}."
+--"придумать"
+mp.msg.Answer.EMPTY = "{#Me} не {#word/придумать,#me,прш} что ответить."
+mp.msg.Answer.SELF = "Хороший ответ."
+
+mp.msg.Yes.YES = "Вопрос был риторическим."
+
+mp.msg.Use.USE = "Как именно?"
+
+--"продаваться"
+mp.msg.Buy.BUY = "{#First} не {#word/продаваться,нст,#first}."
+
+mp.keyboard_space = '<пробел>'
+mp.keyboard_backspace = '<удалить>'
+
+mp.msg.verbs.take = -"брать,#me,нст"
+
+mp.msg.GAMEOVER_HELP = [[Чтобы начать заново, введите рестарт.]];
+
+local function dict(t, hint)
+	local g = std.split(hint, ",")
+	for _, v in ipairs(g) do
+		if t[v] then
+			return t[v]
+		end
+	end
+end
+
+function mp:myself(_, hint)
+	local ww = dict({
+			["вн"] = "себя";
+			["дт"] = "себе";
+			["тв"] = "собой";
+			["пр"] = "себе";
+			["рд"] = "себя";
+		 }, hint)
+	return { ww }
+end
+
+function mp:it(w, hint)
+	hint = hint or ''
+	if w:hint'plural' then
+		return mp.mrd:noun(-"они/"..hint)
+	elseif w:hint'neuter' then
+		return mp.mrd:noun(-"оно/"..hint)
+	elseif w:hint'female' then
+		return mp.mrd:noun(-"она/"..hint)
+	end
+	return mp.mrd:noun(-"он/"..hint)
+end
+
+function mp:synonyms(w, hint)
+	local nt = {
+		['его'] = 'него';
+		['её'] = 'неё';
+		['ее'] = 'нее';
+		['ей'] = 'ней';
+		['им'] = 'ним';
+		['ими'] = 'ними';
+		['их'] = 'них';
+		['ему'] = 'нему';
+	}
+	local t = self:it(w, hint)
+	return { t, nt[t] }
+end
+
+mp.keyboard = {
+	'А','Б','В','Г','Д','Е','Ё','Ж','З','И','Й',
+	'К','Л','М','Н','О','П','Р','О','С','Т','У','Ф',
+	'Х','Ц','Ч','Ш','Щ','Ь','Ы','Ъ','Э','Ю','Я'
+}
+
+local function hints(w)
+	local h = std.split(w, ",")
+	local ret = {}
+	for _, v in ipairs(h) do
+		ret[v] = true
+	end
+	return ret
+end
+
+function mp:err_noun(noun)
+	if noun == '*' then return "{$fmt em|<любое слово>}" end
+	local hint = std.split(noun, "/")
+	local rc = "{$fmt em|"
+	if #hint == 2 then
+		local h = hints(hint[2])
+		local acc = 'кто/что'
+		if h["им"] then
+			acc = 'кто/что'
+		elseif h["рд"] then
+			acc = 'кого/чего'
+		elseif h["дт"] then
+			acc = 'кому/чему'
+		elseif h["вн"] then
+			acc = 'кого/что'
+		elseif h["тв"] then
+			acc = 'кем/чем'
+		elseif h["пр"] or h["пр2"] then
+			acc = 'ком/чём'
+		end
+		rc = rc ..  acc
+	else
+		rc = rc .. "кто/что"
+	end
+	rc = rc .. "}"
+	return rc
+end
+
+function mp.shortcut.vo(hint)
+	return "в ".. hint
+--	local w = std.split(hint)
+--	w = w[#w]
+--	if mp.utf.len(w) > 2 and
+--		(lang.is_vowel(utf.char(w, 1)) or
+--		lang.is_vowel(utf.char(w, 2))) then
+--		return "в ".. hint
+--	end
+--	return "во ".. hint
+end
+
+function mp.shortcut.so(hint)
+	return "с ".. hint
+--	local w = std.split(hint)
+--	w = w[#w]
+--	if mp.utf.len(w) > 2 and
+--		(lang.is_vowel(utf.char(w, 1)) or
+--		lang.is_vowel(utf.char(w, 2))) then
+--		return "с ".. hint
+--	end
+--	return "со ".. hint
+end
+
+function mp:before_Enter(w)
+	if mp:compass_dir(w) then
+		mp:xaction("Walk", w)
+		return
+	end
+	return false
+end
+
+mp.msg.HELP = [[{$fmt b|КАК ИГРАТЬ?}^^
+
+Вводите ваши действия в виде простых предложений вида: глагол -- существительное. Например:^
+> открыть дверь^
+> отпереть дверь ключом^
+> идти на север^
+> взять кепку^
+^
+Чтобы снова увидеть описание обстановки, введите "осмотреть", "осм" или просто нажмите "ввод".^
+^
+Чтобы осмотреть предмет, введите "осмотреть книгу" или просто "книга".^
+^
+Попробуйте "осмотреть себя" и узнать, кто вы.^
+^
+Чтобы узнать какие предметы у вас с собой, наберите "инвентарь" или "инв".^
+^
+Для перемещений используйте стороны света, например: "идти на север" или "север" или просто "с".^
+Кроме сторон света можно перемещаться вверх ("вверх" или "вв") и вниз ("вниз" или "вн").
+^^
+Вы можете воспользоваться клавишей "TAB" для автодополнения ввода.
+]]
+
+function mp.token.compass1(_)
+	return "{noun_obj}/@n_to,compass|{noun_obj}/@ne_to,compass|{noun_obj}/@e_to,compass|{noun_obj}/@se_to,compass|{noun_obj}/@s_to,compass|{noun_obj}/@sw_to,compass|{noun_obj}/@w_to,compass|{noun_obj}/@nw_to,compass"
+end
+
+function mp.token.compass2(_)
+	return "{noun_obj}/@u_to,compass|{noun_obj}/@d_to,compass|{noun_obj}/@in_to,compass|{noun_obj}/@out_to,compass"
+end
+
+function mp.shortcut.pref1()
+	return '[по|подо|за|во|про]'
+end
+
+function mp.shortcut.pref2()
+	return '[по|под|за|в|про]'
+end
+
+function mp.shortcut.pref3()
+	return 'по|подъ|за|въ|про'
+end
+
+std.mod_init(function(_)
+Verb { "#Walk",
+	"идти,{#pref1}йти,{#pref1}йди,иди,бежать,{#pref2}бежать,бег/и,{#pref2}бег/и,влез/ть,"..
+	"[|{#pref3}]ехать,едь,сесть,сядь,лечь,ляг,[в|]стать,[в|]стан/ь",
+	"на {compass1} : Walk",
+	"на|в|во {noun}/вн,scene,enterable : Enter",
+	"внутрь {noun}/рд,scene,enterable : Enter",
+	"к {noun}/дт,scene : Walk",
+	"{compass2}: Walk" }
+
+Verb { "#Exit",
+	"[вы|у]йти,выйд/и,уйд/и,вылез/ти,выхо/ди,обратно,назад,выбраться,выберись,выбираться",
+	"из|с|со {noun}/рд,scene : Exit",
+	"в|через|на {noun}/вн,scene,enterable : Enter",
+	"?наружу : Exit" }
+
+Verb { "#Exam",
+	"[о| |по|рас]смотр/еть,[раз|по]гляд/еть",
+	"?на {noun}/вн : Exam",
+	" : Look",
+	"инвентарь : Inv",
+	"~ под {noun}/тв : LookUnder",
+	"~ под {noun}/вн : LookUnder",
+	"~ в|во|на {noun}/пр,2 : Search",
+	"~ внутри {noun}/рд : Search",
+	"~ в|во {noun}/вн : Search",
+	"~ в|во {noun}/пр,2 о|об|обо|про * : Consult",
+	"~ о|об|обо|про * в|во {noun}/пр,2 : Consult reverse",
+}
+
+Verb { "#Search",
+	"[|по]искать,обыскать,[|по]ищ/и,обыщ/и,[|по]изуч/ать,[|по]исслед/овать",
+	"{noun}/вн : Search",
+	"в|во|на {noun}/пр,2 : Search",
+	"под {noun}/тв : LookUnder",
+	"~ в|во {noun}/пр,2 * : Consult",
+	"~ * в|во {noun}/пр,2 : Consult reverse",
+}
+
+Verb { "#Open",
+	"откр/ыть,распах/нуть,раскр/ыть,отвори/ть",
+	"{noun}/вн : Open",
+	"{noun}/вн {noun}/тв,held : Unlock",
+	"~ {noun}/тв,held {noun}/вн : Unlock reverse",
+}
+
+Verb { "#Unlock",
+	"отпереть,отопр/и",
+	"{noun}/вн {noun}/тв,held : Unlock",
+	"~ {noun}/тв,held {noun}/вн : Unlock reverse",
+}
+
+Verb { "#Close",
+	"закры/ть,закро/й",
+	"{noun}/вн : Close",
+	"{noun}/вн {noun}/тв,held : Lock",
+	"~ {noun}/вн на {noun}/вн,held : Lock",
+	"~ {noun}/тв,held {noun}/вн : Lock reverse",
+}
+
+Verb { "#Lock",
+	"запереть",
+	"{noun}/вн {noun}/тв,held : Lock",
+	"~ {noun}/вн на {noun}/вн,held : Lock",
+	"~ {noun}/тв,held {noun}/вн : Lock reverse",
+}
+
+Verb { "#Inv",
+	"инв/ентарь,с собой",
+	"Inv" }
+
+function mp.shortcut.pref4()
+	return '[ |за|подо]'
+end
+
+function mp.shortcut.pref5()
+	return '[ |за|под]'
+end
+
+Verb { "#Take",
+	"взять,возьм/и,{#pref4}брать,{#pref5}бер/и,доста/ть,схват/ить,"..
+	"украсть,украд/и,извле/чь,вын/уть,вытащ/ить",
+	"{noun}/вн,scene : Take",
+	"{noun}/вн,scene из|с|со|у {noun}/рд,inside,holder: Remove",
+	"~ из|с|со|у {noun}/рд,inside,holder {noun}/вн,scene: Remove reverse",
+}
+
+Verb { "#Insert",
+	"воткн/уть,втык/ать,вставить,влож/ить",
+	"[|про|за]сун/уть,вставь/",
+	"{noun}/вн,held в|во {noun}/вн,inside : Insert",
+	"~ {noun}/вн,held внутрь {noun}/рд : Insert",
+	"~ в|во {noun}/вн {noun}/вн : Insert reverse",
+	"~ внутрь {noun}/рд {noun}/вн : Insert reverse",
+}
+
+Verb { "#Drop",
+	"полож/ить,постав/ить,посади/ть,класть,клади/,помест/ить",
+	"{noun}/вн,held : Drop",
+	"{noun}/вн,held в|во {noun}/вн,inside : Insert",
+	"~ {noun}/вн,held внутрь {noun}/рд : Insert",
+	"{noun}/вн,held на {noun}/вн : PutOn",
+	"~ в|во {noun}/вн {noun}/вн : Insert reverse",
+	"~ внутрь {noun}/рд {noun}/вн : Insert reverse",
+	"~ на {noun}/вн {noun}/вн : PutOn reverse",
+}
+
+Verb {
+	"#ThrowAt",
+	"брос/ить,выбро/сить,кин/уть,кида/ть,швыр/нуть,метн/уть,метать",
+	"{noun}/вн,held : Drop",
+	"{noun}/вн,held в|во|на {noun}/вн : ThrowAt",
+	"~ в|во|на {noun}/вн {noun}/вн : ThrowAt reverse",
+	"~ {noun}/вн {noun}/дт : ThrowAt",
+	"~ {noun}/дт {noun}/вн : ThrowAt reverse",
+
+}
+
+Verb {
+	"#Wear",
+	"наде/ть,оде/ть",
+	"{noun}/вн,held : Wear",
+}
+
+Verb {
+	"#Disrobe",
+	"снять,сним/ать",
+	"{noun}/вн,worn : Disrobe",
+	"~ {noun}/вн с|со {noun}/рд : Remove",
+	"~ с|со {noun}/рд {noun}/вн : Remove reverse"
+}
+
+Verb {
+	"#SwitchOn",
+	"включ/ить,вруб/ить,активи/ровать",
+	"{noun}/вн : SwitchOn",
+}
+
+Verb {
+	"#SwitchOff",
+	"выключ/ить,выруб/ить,деактиви/ровать",
+	"{noun}/вн : SwitchOff",
+}
+
+Verb {
+	"#Eat",
+	"есть,съе/сть,куша/ть,скуша/ть,сожр/ать,жри,жрать,ешь",
+	"{noun}/вн,held : Eat",
+}
+
+Verb {
+	"#Taste",
+	"лизать,лизн/уть,попроб/овать,полиз/ать,сосать,пососа/ть",
+	"{noun}/вн : Taste"
+}
+
+Verb {
+	"#Drink",
+	"пить,выпить,выпей,выпью,пью",
+	"{noun}/вн,held : Drink",
+}
+
+function mp.shortcut.pref6()
+	return 'с|по|пере|за'
+end
+
+Verb {
+	"#Push",
+	"толк/ать,пих/ать,нажим/ать,нажм/и,нажать,[{#pref6}]двин/уть,[|{#pref6}]двига/ть,"..
+	"запих/нуть,затолк/ать,[|на]давить",
+	"?на {noun}/вн : Push",
+	"{noun}/вн на|в|во {noun}/вн : Transfer",
+	"~ {noun}/вн к {noun}/дт : Transfer",
+	"{noun}/вн {compass2} : Transfer",
+	"~ на|в|во {noun}/вн {noun}/вн : Transfer reverse",
+	"~ {compass2} {noun}/вн : Transfer reverse"
+}
+
+Verb {
+	"#Pull",
+	"[|вы|по]тян/уть,[|вы|по]тащ/ить,тягать,[|по]волоч/ь,[|по]волок/ти,дёрн/уть,дёрг/ать",
+	"?за {noun}/вн : Pull",
+	"{noun}/вн на|в|во {noun}/вн : Transfer",
+	"~ {noun}/вн к {noun}/дт : Transfer",
+	"{noun}/вн {compass2} : Transfer",
+	"~ на|в|во {noun}/вн {noun}/вн : Transfer reverse",
+	"~ {compass2} {noun}/вн : Transfer reverse"
+}
+
+Verb {
+	"#Turn",
+	"враща/ть,поверн/уть,[|за|по]верт/еть,[|за]крути/ть",
+	"{noun}/вн : Turn"
+}
+
+Verb {
+	"#Wait",
+	"ждать,жди,подожд/ать,ожид/ать",
+	"Wait"
+}
+
+function mp.shortcut.pref7()
+	return 'за|по|про|пере|вы'
+end
+
+Verb {
+	"#Rub",
+	"[|{#pref7}]тереть,[|{#pref7}]три/,[{#pref7}]тира/ть,",
+	"{noun}/вн : Rub"
+}
+
+Verb {
+	"#Sing",
+	"[|с]петь,спой/,пой",
+	"Sing"
+}
+
+Verb {
+	"#Touch",
+	"[ |по]трога/ть,трон/уть,дотрон/уться,[ |при]косну/ться,касать/ся,[ |по|о]щупа/ть,[ |по]глад/ить",
+	"{noun}/вн : Touch",
+	"~ до {noun}/рд : Touch",
+	"~ к {noun}/дт : Touch",
+	"~ {noun}/рд : Touch",
+}
+
+Verb {
+	"#Give",
+	"дать,отда/ть,предло/жить,предла/гать,дам,даю,дадим",
+	"{noun}/вн,held {noun}/дт,live : Give",
+	"~ {noun}/дт,live {noun}/вн,held : Give reverse",
+}
+
+Verb {
+	"#Show",
+	"показ/ать,покаж/и",
+	"{noun}/вн,held {noun}/дт,live : Show",
+	"~ {noun}/дт,live {noun}/вн,held : Show reverse",
+}
+
+Verb {
+	"#Burn",
+	"[|под]жечь,жг/и,подожги/,поджиг/ай,зажг/и,зажиг/ай,зажечь",
+	"{noun}/вн : Burn",
+	"{noun}/вн {noun}/тв,held : Burn",
+	"~ {noun}/тв,held {noun}/вн reverse",
+}
+
+Verb {
+	"#Wake",
+	"будить,разбуд/ить,просн/уться,бужу",
+	"{noun}/вн,live : WakeOther",
+	"Wake",
+}
+
+Verb {
+	"#Kiss",
+	"целовать,поцел/овать,чмок/нуть,обним/ать,обнять,целуй",
+	"{noun}/вн,live : Kiss"
+}
+
+Verb {
+	"#Think",
+	"дума/ть,мысл/ить,подум/ать,рассужд/ать",
+	"Think"
+}
+
+Verb {
+	"#Smell",
+	"нюха/ть,понюха/ть,занюх/ать,нюхн/уть,принюх/аться",
+	"Smell",
+	"{noun}/вн : Smell"
+}
+
+Verb {
+	"#Listen",
+	"слуша/ть,послуша/ть,прислушать/ся,слыш/ать,слух/",
+	"Listen",
+	"{noun}/вн : Listen",
+	"~ к {noun}/дт : Listen",
+}
+
+Verb {
+	"#Dig",
+	"копа/ть,выкопа/ть,выры/ть,рыть,рой,вырой",
+	"Dig",
+	"{noun}/вн,scene : Dig",
+	"{noun}/вн,scene {noun}/тв,held : Dig",
+	"~ {noun}/тв,held {noun}/вн,scene : Dig reverse",
+}
+
+function mp.shortcut.pref8()
+	return '[|раз|на|по|от|пере|вы]'
+end
+
+Verb {
+	"#Cut",
+	"{#pref8}рез/ать,{#pref8}реж/ь",
+	"{noun}/вн : Cut",
+	"{noun}/вн {noun}/тв,held: Cut",
+	"~ {noun}/тв,held {noun}/вн: Cut reverse"
+}
+
+function mp.shortcut.pref9()
+	return '[ |по|разо|со]'
+end
+
+Verb {
+	"#Tear",
+	"{#pref9}рвать,{#pref9}рви/,{#pref9}рву",
+	"{noun}/вн : Tear",
+}
+
+Verb {
+	"#Tie",
+	"[при|с]вяз/ать,[при|с]вяж/и",
+	"{noun}/вн : Tie",
+	"{noun}/вн к {noun}/дт : Tie",
+	"~ {noun}/вн с|со {noun}/тв : Tie",
+	"~ к {noun}/дт {noun}/вн : Tie reverse",
+	"~ с|со {noun}/тв {noun}/вн : Tie reverse",
+}
+
+Verb {
+	"#Blow",
+	"дуть,дуй/,дун/ь,задут/ь,задун/ь,задуй/",
+	"в|во|на {noun}/вн : Blow",
+	"~ {noun}/вн : Blow", -- задуть
+}
+
+Verb {
+	"#Attack",
+	"атак/овать,[|у|вы|раз|по|выши]бить,[|по|раз]бей/,удар/ить,"..
+	"[|с|раз|по|вы|вз]лома/ть,разруш/ить,побь/,круш/ить,напасть,напад/ать,пнуть",
+	"?на {noun}/вн : Attack"
+}
+
+Verb {
+	"#Sleep",
+	"спать,усн/уть,засн/уть,дрем/ать",
+	"Sleep",
+}
+
+Verb {
+	"#Swim",
+	"плыть,плав/ать,ныря/ть,уплы/ть,поплы/ть,нырн/уть,[ |ис]купа/ться",
+	"Swim",
+}
+
+Verb {
+	"#Consult",
+	"[|про|по]чита/ть,проч/есть",
+	"в|во {noun}/пр,2 о|об|обо|про * : Consult",
+	"~ о|об|обо|про * в|во {noun}/пр,2 : Consult reverse",
+	"~ {noun}/вн : Exam",
+}
+
+Verb {
+	"#Fill",
+	"наполн/ить,нали/ть",
+	"?в {noun}/вн : Fill",
+	"~ внутрь {noun}/рд : Fill"
+}
+
+Verb {
+	"#Jump",
+	"[|по]прыг/ать,скак/ать,[|пере|под]прыг/нуть,переско/чить",
+	"Jump",
+	"через {noun}/вн,scene : JumpOver",
+	"~ в {noun}/вн,scene : Enter",
+	"~ на {noun}/вн,scene : Climb",
+	"~ с|со {noun}/рд,scene : GetOff",
+	"~ {compass2} : Walk",
+	"~ +через {noun}/вн,scene : JumpOver",
+}
+
+Verb {
+	"#Wave",
+	"[|по]мах/ать,взмахн/уть,помаш/и",
+	"WaveHands",
+	"~ руками : WaveHands",
+	"{noun}/тв,held : Wave"
+}
+
+Verb {
+	"#Climb",
+	"[|за|по|про|в]лез/ть,карабк/аться,взбир/ться,взобраться,взбери/сь",
+	"на {noun}/вн,scene : Climb",
+	"по {noun}/дт,scene : Climb",
+	"~ внутрь {noun}/рд,scene : Enter",
+	"~ в|во {noun}/вн,scene : Enter",
+	"{compass2}: Walk",
+}
+
+Verb {
+	"#GetOff",
+	"слез/ть,спусти/ться,встать,встан/ь",
+	"GetOff",
+	"{compass2}: Walk",
+	"с|со {noun}/рд,scene : GetOff",
+}
+
+Verb {
+	"#Buy",
+	"купи/ть,покупать",
+	"{noun}/вн,scene : Buy"
+}
+
+Verb {
+	"#Talk",
+	"[|по]говор/ить,[|по]бесед/овать,разговарива/ть",
+	"с|со {noun}/тв,live : Talk"
+
+}
+
+Verb {
+	"#Tell",
+	"сказать,сообщи/ть,сообщу,рассказать,расскаж/ите",
+	"{noun}/дт,live о|об|обо|про * : Tell",
+	"~ * {noun}/дт,live : Tell reverse",
+	"~ {noun}/дт * : AskTo",
+}
+
+Verb {
+	"#Ask",
+	"спросит/ь,расспросит/ь",
+	"{noun}/вн,live о|об|обо|про * : Ask",
+	"~ у {noun}/рд,live о|об|обо|про * : Ask",
+	"~ о|об|обо|про * у {noun}/рд,live : Ask reverse",
+}
+
+Verb {
+	"#AskFor",
+	"попроси/ть,выпроси/ть,уговори/ть,проси/ть,попрош/у,выпрош/у",
+	"у {noun}/рд,live * : AskFor",
+	"* у {noun}/рд,live : AskFor reverse",
+	"~ {noun}/вн,live * : AskTo",
+}
+
+Verb {
+	"#Answer",
+	"ответ/ить,отвеч/ать",
+	"{noun}/дт,live * : Answer",
+	"~ * {noun}/дт,live : Answer reverse",
+}
+
+Verb {
+	"#Yes",
+	"да",
+	"Yes",
+}
+
+Verb {
+	"#No",
+	"нет",
+	"No",
+}
+
+Verb {
+    "~ использ/овать,воспольз/оваться",
+    "{noun}/вн : Use",
+    "{noun}/тв : Use",
+}
+
+if DEBUG then
+	MetaVerb {
+		"#MetaWord",
+		"~_слово",
+		"* : MetaWord"
+	}
+	MetaVerb {
+		"#MetaNoun",
+		"~_сущ/ествительное",
+		"* : MetaNoun"
+	}
+	MetaVerb {
+		"#MetaTrace",
+		"~_трассировка",
+		"да : MetaTraceOn",
+		"нет : MetaTraceOff",
+	}
+	MetaVerb {
+		"#MetaDump",
+		"~_дамп",
+		"MetaDump"
+	}
+end
+MetaVerb {
+	"#MetaTranscript",
+	"~транскрипт",
+	"да : MetaTranscriptOn",
+	"нет : MetaTranscriptOff",
+	"MetaTranscript",
+}
+
+MetaVerb {
+	"#MetaExpert",
+	"~парсер",
+	"эксперт да : MetaExpertOn",
+	"эксперт нет : MetaExpertOff",
+}
+
+MetaVerb {
+	"#MetaSave",
+	"~сохрани/ть",
+	"MetaSave"
+}
+MetaVerb {
+	"#MetaLoad",
+	"~загрузи/ть",
+	"MetaLoad"
+}
+
+if DEBUG then
+MetaVerb {
+	"#MetaAutoplay",
+	"~автоскрипт",
+	"MetaAutoplay"
+}
+end
+
+mp.msg.MetaRestart.RESTART = "Начать заново?";
+
+MetaVerb {
+	"#MetaRestart",
+	"~заново,~рестарт",
+	"MetaRestart"
+}
+MetaVerb {
+	"#MetaHelp",
+	"~помощь,помоги/те",
+	"MetaHelp",
+}
+end, 1)
+
+std.mod_start(function()
+	if mp.undo > 0 then
+		mp.msg.MetaUndo.EMPTY = "Отменять нечего."
+		MetaVerb {
+			"#MetaUndo",
+			"~отмен/ить",
+			"MetaUndo",
+		}
+	end
+end)
+-- Dialog
+std.phr.default_Event = "Exam"
+
+Verb ({"~ сказать", "{select} : Exam" }, std.dlg)
+Verb ({'#Next', "дальше", "Next" }, mp.cutscene)
+Verb ({'#Exam', "~ осмотреть", "Look" }, std.dlg)
+
+mp.cutscene.default_Verb = "дальше"
+mp.cutscene.help = fmt.em "<дальше>";
+
+std.dlg.default_Verb = "осмотреть"
+std.player.word = -"ты/мр,2л"
 --luacheck: globals mp
 --luacheck: no self
 
@@ -12469,18 +12499,18 @@ function mp:err(err)
 				local fixed = verb.verb[verb.word_nr]
 				if verb.verb_nr == 1 then
 					hint = true
-					p (self.msg.UNKNOWN_VERB, " ", iface:em(self.words[verb.verb_nr]), ".")
-					p (self.msg.UNKNOWN_VERB_HINT, " ", iface:em(fixed.word .. (fixed.morph or "")), "?")
+					p (mp:mesg 'UNKNOWN_VERB', " ", iface:em(self.words[verb.verb_nr]), ".")
+					p (mp:mesg 'UNKNOWN_VERB_HINT', " ", iface:em(fixed.word .. (fixed.morph or "")), "?")
 					break
 				end
 			end
 		end
 		if not hint then
-			p (self.msg.UNKNOWN_VERB or "Unknown verb:",
+			p (mp:mesg('UNKNOWN_VERB') or "Unknown verb:",
 			   " ", iface:em(self.words[1]), ".")
 		end
 	elseif err == "EMPTY_INPUT" then
-		p (self.msg.EMPTY or "Empty input.")
+		p (mp:mesg('EMPTY') or "Empty input.")
 	elseif err == "INCOMPLETE" or err == "UNKNOWN_WORD" then
 		local need_noun
 		local second_noun
@@ -12527,7 +12557,7 @@ function mp:err(err)
 				end
 			end
 			if mp:thedark() and need_noun then
-				p (self.msg.UNKNOWN_THEDARK)
+				mp:message 'UNKNOWN_THEDARK'
 				return
 			end
 			if need_noun then
@@ -12540,15 +12570,15 @@ function mp:err(err)
 		else
 			if need_noun then
 				if second_noun then
-					p (self.msg.INCOMPLETE_SECOND_NOUN or self.msg.INCOMPLETE_NOUN,
+					p (mp:mesg('INCOMPLETE_SECOND_NOUN') or mp:mesg('INCOMPLETE_NOUN'),
 						" \"", second_noun, " ", mp:err_noun(need_noun), "\"?")
 				elseif parsed then
-					p (self.msg.INCOMPLETE_NOUN, " \"", parsed, "\"?")
+					p (mp:mesg('INCOMPLETE_NOUN'), " \"", parsed, "\"?")
 				else
-					p (self.msg.INCOMPLETE_NOUN, "?")
+					p (mp:mesg('INCOMPLETE_NOUN'), "?")
 				end
 			else
-				p (self.msg.INCOMPLETE)
+				mp:message 'INCOMPLETE'
 			end
 		end
 		if not mp.errhints then
@@ -12581,9 +12611,9 @@ function mp:err(err)
 				if #words > 2 and parsed then
 					parsed = parsed .. ': '
 				end
-				p (self.msg.HINT_WORDS, ", ", parsed or '')
+				p (mp:mesg 'HINT_WORDS', ", ", parsed or '')
 			else
-				p (self.msg.HINT_WORDS, " ")
+				p (mp:mesg 'HINT_WORDS', " ")
 			end
 		end
 
@@ -12601,7 +12631,7 @@ function mp:err(err)
 			p "?"
 		end
 	elseif err == "MULTIPLE" then
-		pr (self.msg.MULTIPLE, " ", self.multi[1])
+		pr (mp:mesg 'MULTIPLE', " ", self.multi[1])
 		for k = 2, #self.multi do
 			if k == #self.multi then
 				pr (" ", mp.msg.HINT_AND, " ", self.multi[k])
@@ -12626,7 +12656,7 @@ local everything = std.obj {
 		end
 		if not mp.expert_mode or
 			(ev ~= 'Drop' and ev ~= 'Take' and ev ~= 'Remove') then
-			p(mp.msg.NO_ALL)
+			mp:message 'NO_ALL'
 			return
 		end
 		return false
@@ -12657,12 +12687,16 @@ mp.door = std.class({
 		end
 		if not s:has 'open' then
 			local t = std.call(s, 'when_closed')
-			p (t or mp.msg.Enter.DOOR_CLOSED)
+			if t then
+				p(t)
+			else
+				mp:message 'Enter.DOOR_CLOSED'
+			end
 			return
 		end
 		local r, v = mp:runorval(s, 'door_to')
 		if not v then
-			p (mp.msg.Enter.DOOR_NOWHERE)
+			mp:message 'Enter.DOOR_NOWHERE'
 			return
 		end
 		if r then
@@ -12674,11 +12708,11 @@ mp.door = std.class({
 	end;
 }, std.obj):attr 'enterable,openable,door'
 
-local function pnoun(noun, ...)
+local function pnoun(noun, m, ...)
 	local ctx = mp:save_ctx()
 	mp.first = noun
 	mp.first_hint = noun:gram().hint
-	p(...)
+	mp:message(m, ...)
 	mp:restore_ctx(ctx)
 end
 
@@ -12715,7 +12749,7 @@ std.class({
 		end
 	end;
 	OnError = function(_, _) -- s, err
-		p(mp.msg.CUTSCENE_HELP)
+		mp:message 'CUTSCENE_HELP'
 	end;
 	Next = function(s, force)
 		if game:time() == 0 then
@@ -12738,13 +12772,13 @@ std.class({
 mp.gameover =
 std.class({
 	before_Default = function()
-		p(mp.msg.GAMEOVER_HELP);
+		mp:message 'GAMEOVER_HELP';
 	end;
 	before_Look = function()
-		p(mp.msg.GAMEOVER_HELP);
+		mp:message 'GAMEOVER_HELP';
 	end;
 	OnError = function()
-		p(mp.msg.GAMEOVER_HELP);
+		mp:message 'GAMEOVER_HELP';
 	end;
 }, std.room)
 
@@ -12759,7 +12793,7 @@ function std.obj:multi_alias(n)
 end
 
 std.room.dsc = function(_)
-	p (mp.msg.SCENE);
+	mp:message 'SCENE';
 end
 
 local function trace_light(v)
@@ -12789,7 +12823,7 @@ function std.obj:scene()
 	local title = iface:title(std.titleof(sc))
 	if s ~= sc then
 		local r = std.call(std.me():where(), "title")
-		title = title .. ' '..mp.fmt("(".. (r or mp.msg.TITLE_INSIDE) .. ")")
+		title = title .. ' '..mp.fmt("(".. (r or mp:mesg('TITLE_INSIDE')) .. ")")
 	end
 	return title
 end
@@ -13044,6 +13078,9 @@ end
 -- dialogs
 std.phr.raw_word = function(s)
 	local dsc = std.call(s, 'dsc')
+	if type(dsc) ~= 'string' then
+		std.err("Empty dsc in phrase", 2)
+	end
 	return dsc .. '|'.. (tostring(s.__ph_idx) or std.dispof(s))
 end
 
@@ -13064,7 +13101,7 @@ end
 std.dlg.scene = std.obj.scene
 std.dlg.title = false
 std.dlg.OnError = function(_, _) -- s, err
-	p(mp.msg.DLG_HELP)
+	mp:message 'DLG_HELP'
 end;
 
 std.dlg.nouns = function(s)
@@ -13126,14 +13163,14 @@ obj {
 			r, v = mp:runorval(std.here(), d, d)
 			if r then -- somewhat?
 				if std.object(r):type 'room' then
-					p (mp.msg.COMPASS_EXAM_NO)
+					mp:message 'COMPASS_EXAM_NO'
 					return
 				end
-				p (mp.msg.COMPASS_EXAM(d, std.object(r)))
+				mp:message('COMPASS_EXAM', d, std.object(r))
 				return
 			end
 			if not v then
-				p (mp.msg.COMPASS_EXAM_NO)
+				mp:message 'COMPASS_EXAM_NO'
 				return
 			end
 			return v
@@ -13141,7 +13178,7 @@ obj {
 		if ev == 'Walk' or ev == 'Enter' then
 			local d = dir
 			if not std.me():where():type'room' then
-				p (mp.msg.Enter.EXITBEFORE)
+				mp:message 'Enter.EXITBEFORE'
 				return
 			end
 			if std.here()[d] == nil and d == 'out_to' then
@@ -13155,7 +13192,7 @@ obj {
 					if t then p(t) end
 					return
 				end
-				p (mp.msg.COMPASS_NOWAY)
+				mp:message 'COMPASS_NOWAY'
 				return
 			end
 			if not r then
@@ -13230,9 +13267,9 @@ function mp:multidsc(oo, inv)
 		else
 			pr (v)
 			if ob:has'worn' then
-				mp.msg.WORN(ob)
+				pr(mp:mesg('WORN', ob))
 			elseif ob:has'openable' and ob:has'open' then
-				mp.msg.OPEN(ob)
+				pr(mp:mesg('OPEN', ob))
 			end
 		end
 	end
@@ -13258,7 +13295,7 @@ function mp:content(w, exam)
 			dsc, v = std.call(w, 'dark_dsc')
 			if dsc then p(dsc) end
 			if not v then
-				p(mp.msg.WHEN_DARK)
+				mp:message 'WHEN_DARK'
 			end
 		else
 			if w:type'room' and not w:has'visited' and w.init_dsc ~= nil then
@@ -13268,7 +13305,7 @@ function mp:content(w, exam)
 			end
 			if dsc then p(dsc) end
 			if not v then
-				p(mp.msg.INSIDE_SCENE)
+				mp:message 'INSIDE_SCENE'
 			end
 		end
 		p(std.scene_delim)
@@ -13332,35 +13369,35 @@ function mp:content(w, exam)
 	if #oo == 0 then
 		if not inside and exam and mp.first == w and not something then
 			if w:has 'supporter' then
-				pnoun (w, mp.msg.Exam.ON)
+				pnoun (w, 'Exam.ON')
 			else
-				pnoun (w, mp.msg.Exam.IN)
+				pnoun (w, 'Exam.IN')
 			end
-			p (mp.msg.Exam.NOTHING)
+			mp:message 'Exam.NOTHING'
 		end
 	elseif #oo == 1 and not oo[1]:hint 'plural' then
 		if std.me():where() == w or std.here() == w then
-			p (mp.msg.Look.HEREIS)
+			mp:message('Look.HEREIS', w)
 		else
 			if w:has 'supporter' then
-				pnoun (w, mp.msg.Exam.ON)
+				pnoun (w, 'Exam.ON')
 			else
-				pnoun (w, mp.msg.Exam.IN)
+				pnoun (w, 'Exam.IN')
 			end
-			p (mp.msg.Exam.IS)
+			mp:message 'Exam.IS'
 		end
 		-- p(oo[1]:noun(1), ".")
 		mp:multidsc(oo)
 	else
 		if std.me():where() == w or std.here() == w then
-			p (mp.msg.Look.HEREARE)
+			mp:message('Look.HEREARE', w)
 		else
 			if w:has 'supporter' then
-				pnoun (w, mp.msg.Exam.ON)
+				pnoun (w, 'Exam.ON')
 			else
-				pnoun (w, mp.msg.Exam.IN)
+				pnoun (w, 'Exam.IN')
 			end
-			p (mp.msg.Exam.ARE)
+			mp:message 'Exam.ARE'
 		end
 		mp:multidsc(oo)
 	end
@@ -13433,7 +13470,7 @@ function mp:post_action()
 		mp.snapshot = nr + 1
 	end
 	if self.score and (self.score ~= (self.__old_score or 0)) then
-		mp.msg.SCORE(self.score - (self.__old_score or 0))
+		mp:message('SCORE', self.score - (self.__old_score or 0))
 		self.__old_score = self.score
 	end
 
@@ -13459,16 +13496,16 @@ end
 -- Returns true if we have to terminate the sequence.
 function mp:check_touch()
 	if self.first and not self.first:access() and not self.first:type'room' then
-		p (self.msg.ACCESS1 or "{#First} is not accessible.")
+		p (mp:mesg('ACCESS1') or "{#First} is not accessible.")
 		if std.here() ~= std.me():where() then
-			p (mp.msg.EXITBEFORE)
+			mp:message 'EXITBEFORE'
 		end
 		return true
 	end
 	if self.second and not self.second:access() and not self.first:type'room' then
-		p (self.msg.ACCESS2 or "{#Second} is not accessible.")
+		p (mp:mesg('ACCESS2') or "{#Second} is not accessible.")
 		if std.here() ~= std.me():where() then
-			p (mp.msg.EXITBEFORE)
+			mp:message 'EXITBEFORE'
 		end
 		return true
 	end
@@ -13483,7 +13520,7 @@ function mp:before_Any(ev)
 	if self.first and not self.first:access() and not self.first:type'room' then
 		p (self.msg.ACCESS1 or "{#First} is not accessible.")
 		if std.here() ~= std.me():where() then
-			p (mp.msg.EXITBEFORE)
+			mp:message 'EXITBEFORE'
 		end
 		return
 	end
@@ -13491,7 +13528,7 @@ function mp:before_Any(ev)
 	if self.second and not self.second:access() and not self.first:type'room' then
 		p (self.msg.ACCESS2 or "{#Second} is not accessible.")
 		if std.here() ~= std.me():where() then
-			p (mp.msg.EXITBEFORE)
+			mp:message 'EXITBEFORE'
 		end
 		return
 	end
@@ -13528,10 +13565,18 @@ function mp:after_Exam(w)
 		if w:has'openable' then
 			if w:has 'open' then
 				local t = std.call(w, 'when_open')
-				p (t or mp.msg.Exam.OPENED);
+				if t then
+					p(t)
+				else
+					mp:message 'Exam.OPENED'
+				end
 			else
 				local t = std.call(w, 'when_closed')
-				p (t or mp.msg.Exam.CLOSED);
+				if t then
+					p(t)
+				else
+					mp:message 'Exam.CLOSED'
+				end
 			end
 			return
 		end
@@ -13542,16 +13587,20 @@ function mp:after_Exam(w)
 			else
 				t = std.call(w, 'when_off')
 			end
-			p (t or mp.msg.Exam.SWITCHSTATE)
+			if t then
+				p(t)
+			else
+				mp:message 'Exam.SWITCHSTATE'
+			end
 			return
 		end
 		if w == std.here() then
 			std.me():need_scene(true)
 		else
 			if w == std.me() then
-				p (mp.msg.Exam.SELF);
+				mp:message 'Exam.SELF'
 			else
-				p (mp.msg.Exam.DEFAULT);
+				mp:message 'Exam.DEFAULT'
 			end
 		end
 	end
@@ -13567,7 +13616,7 @@ function mp:Enter(w)
 		return
 	end
 	if w == std.me():where() then
-		p (mp.msg.Enter.ALREADY)
+		mp:message 'Enter.ALREADY'
 		return
 	end
 
@@ -13577,17 +13626,17 @@ function mp:Enter(w)
 	end
 
 	if seen(w, std.me()) then
-		p (mp.msg.Enter.INV)
+		mp:message 'Enter.INV'
 		return
 	end
 
 	if not w:has 'enterable' then
-		p (mp.msg.Enter.IMPOSSIBLE)
+		mp:message 'Enter.IMPOSSIBLE'
 		return
 	end
 
 	if w:has 'container' and not w:has 'open' then
-		p (mp.msg.Enter.CLOSED)
+		mp:message 'Enter.CLOSED'
 		return
 	end
 
@@ -13600,7 +13649,7 @@ function mp:Enter(w)
 end
 
 function mp:after_Enter(w)
-	p (mp.msg.Enter.ENTERED)
+	mp:message 'Enter.ENTERED'
 end
 
 mp.msg.Walk = {}
@@ -13610,17 +13659,17 @@ function mp:Walk(w)
 		return
 	end
 	if w == std.me():where() then
-		p (mp.msg.Walk.ALREADY)
+		mp:message 'Walk.ALREADY'
 		return
 	end
 
 	if seen(w, std.me()) then
-		p (mp.msg.Walk.INV)
+		mp:message 'Walk.INV'
 		return
 	end
 
 --	if std.me():where() ~= std.here() then
---		p (mp.msg.Enter.EXITBEFORE)
+--		mp:message 'Enter.EXITBEFORE'
 --		return
 --	end
 	return false
@@ -13628,9 +13677,9 @@ end
 
 function mp:after_Walk(w)
 	if not w then
-		p (mp.msg.Walk.NOWHERE)
+		mp:message 'Walk.NOWHERE'
 	else
-		p (mp.msg.Walk.WALK)
+		mp:message 'Walk.WALK'
 	end
 end
 
@@ -13656,14 +13705,14 @@ function mp:Exit(w)
 			return
 		end
 		if wh:inside(w) then
-			p (mp.msg.Enter.EXITBEFORE)
+			mp:message 'Enter.EXITBEFORE'
 			return
 		end
-		p (mp.msg.Exit.NOTHERE)
+		mp:message 'Exit.NOTHERE'
 		return
 	end
 	if wh:has'container' and not wh:has'open' then
-		p (mp.msg.Exit.CLOSED)
+		mp:message 'Exit.CLOSED'
 		return
 	end
 
@@ -13673,7 +13722,7 @@ function mp:Exit(w)
 	end
 
 	if wh:from() == wh or wh:type 'room' then
-		p (mp.msg.Exit.NOWHERE)
+		mp:message 'Exit.NOWHERE'
 		return
 	end
 --	if wh:type'room' then
@@ -13687,7 +13736,7 @@ end
 
 function mp:after_Exit(w)
 	if w and not w:type 'room' then
-		p (mp.msg.Exit.EXITED)
+		mp:message 'Exit.EXITED'
 	end
 end
 
@@ -13702,9 +13751,9 @@ function mp:detailed_Inv(wh, indent)
 			local inv = std.call(o, 'inv') or o:noun(1)
 			pr(inv)
 			if o:has'worn' then
-				mp.msg.WORN(o)
+				mp:message('WORN', o)
 			elseif o:has'openable' and o:has'open' then
-				mp.msg.OPEN(o)
+				mp:message('OPEN', o)
 			end
 			pn()
 			if o:has'supporter' or o:has'container' then
@@ -13718,7 +13767,7 @@ function mp:after_Inv()
 	local oo = {}
 	self:objects(std.me(), oo, false)
 	if #oo == 0 then
-		p(mp.msg.Inv.NOTHING)
+		mp:message 'Inv.NOTHING'
 		return
 	end
 	local empty = true
@@ -13726,10 +13775,10 @@ function mp:after_Inv()
 		if not v:has'concealed' then empty = false break end
 	end
 	if empty then
-		p(mp.msg.Inv.NOTHING)
+		mp:message 'Inv.NOTHING'
 		return
 	end
-	pr(mp.msg.Inv.INV)
+	pr(mp:mesg 'Inv.INV')
 	if mp.detailed_inv then
 		pn(":")
 		mp:detailed_Inv(std.me(), 1)
@@ -13749,15 +13798,15 @@ function mp:Open(w)
 		return
 	end
 	if not w:has'openable' then
-		p(mp.msg.Open.NOTOPENABLE)
+		mp:message 'Open.NOTOPENABLE'
 		return
 	end
 	if w:has'open' then
-		p(mp.msg.Open.WHENOPEN)
+		mp:message 'Open.WHENOPEN'
 		return
 	end
 	if w:has'locked' then
-		p(mp.msg.Open.WHENLOCKED)
+		mp:message 'Open.WHENLOCKED'
 		return
 	end
 	w:attr'open'
@@ -13765,7 +13814,7 @@ function mp:Open(w)
 end
 
 function mp:after_Open(w)
-	p(mp.msg.Open.OPEN)
+	mp:message 'Open.OPEN'
 	if w:has'container' then
 		self:content(w)
 	end
@@ -13778,11 +13827,11 @@ function mp:Close(w)
 		return
 	end
 	if not w:has'openable' then
-		p(mp.msg.Close.NOTOPENABLE)
+		mp:message 'Close.NOTOPENABLE'
 		return
 	end
 	if not w:has'open' then
-		p(mp.msg.Close.WHENCLOSED)
+		mp:message 'Close.WHENCLOSED'
 		return
 	end
 	w:attr'~open'
@@ -13790,16 +13839,33 @@ function mp:Close(w)
 end
 
 function mp:after_Close(w)
-	p(mp.msg.Close.CLOSE)
+	mp:message 'Close.CLOSE'
 end
 
 --- Show mp message using mp.msg constant
 -- args uses only for functions
 function mp:message(m, ...)
-	if type(mp.msg[m]) ~= 'function' then
-		p(mp.msg[m])
+	p(mp:mesg(m, ...))
+end
+
+-- same as above, but do not call p
+function mp:mesg(m, ...)
+	local t = std.split(m, ".")
+	m = mp.msg
+	for _, n in ipairs(t) do
+		m = m[n]
+		if not m then
+			std.err("Wrong message id", 2)
+		end
+	end
+	if type(m) ~= 'function' then
+		return m
 	else
-		mp.msg[m](...)
+		std.callpush()
+		local v = m(...)
+		local r = std.pget()
+		std.callpop()
+		return r or v
 	end
 end
 --- Check if the object is alive.
@@ -13834,7 +13900,7 @@ function mp:check_held(t)
 	mp:message('TAKE_BEFORE', t)
 	mp:subaction('Take', t)
 	if not have(t) then
---		mp.msg.NOTINV(t)
+--		mp:message('NOTINV', t)
 		return true
 	end
 	return false
@@ -13842,7 +13908,7 @@ end
 
 function mp:check_inside(w)
 	if std.me():where() ~= std.here() and not w:inside(std.me():where()) then
-		p (mp.msg.Enter.EXITBEFORE)
+		mp:message 'Enter.EXITBEFORE'
 		return true
 	end
 	return false
@@ -13857,7 +13923,7 @@ function mp:check_worn(w)
 		mp:message('DISROBE_BEFORE', w)
 		mp:subaction('Disrobe', w)
 		if w:has'worn' then
---			p (mp.msg.Drop.WORN)
+--			mp:message 'Drop.WORN'
 			return true
 		end
 	end
@@ -13874,23 +13940,23 @@ function mp:Lock(w, t)
 	end
 	local r = std.call(w, 'with_key')
 	if not w:has 'lockable' or not r then
-		p(mp.msg.Lock.IMPOSSIBLE)
+		mp:message 'Lock.IMPOSSIBLE'
 		return
 	end
 	if w:has 'locked' then
-		p(mp.msg.Lock.LOCKED)
+		mp:message 'Lock.LOCKED'
 		return
 	end
 	if w:has 'open' then
 		mp:message('CLOSE_BEFORE', w)
 		mp:subaction('Close', w)
 		if w:has 'open' then
-			p(mp.msg.Lock.OPEN)
+			mp:message 'Lock.OPEN'
 			return
 		end
 	end
 	if std.object(r) ~= t then
-		p(mp.msg.Lock.WRONGKEY)
+		mp:message 'Lock.WRONGKEY'
 		return
 	end
 	w:attr'locked'
@@ -13898,7 +13964,7 @@ function mp:Lock(w, t)
 end
 
 function mp:after_Lock(w, wh)
-	p(mp.msg.Lock.LOCK)
+	mp:message 'Lock.LOCK'
 end
 
 mp.msg.Unlock = {}
@@ -13911,15 +13977,15 @@ function mp:Unlock(w, t)
 	end
 	local r = std.call(w, 'with_key')
 	if not w:has 'lockable' or not r then
-		p(mp.msg.Unlock.IMPOSSIBLE)
+		mp:message 'Unlock.IMPOSSIBLE'
 		return
 	end
 	if not w:has 'locked' then
-		p(mp.msg.Unlock.NOTLOCKED)
+		mp:message 'Unlock.NOTLOCKED'
 		return
 	end
 	if std.object(r) ~= t then
-		p(mp.msg.Unlock.WRONGKEY)
+		mp:message 'Unlock.WRONGKEY'
 		return
 	end
 	w:attr'~locked'
@@ -13928,7 +13994,7 @@ function mp:Unlock(w, t)
 end
 
 function mp:after_Unlock(w, wh)
-	p(mp.msg.Unlock.UNLOCK)
+	mp:message 'Unlock.UNLOCK'
 end
 
 --- Check if the object is inside an object.
@@ -14050,7 +14116,7 @@ function mp:TakeAll(wh)
 		end
 	end
 	if empty then
-		p(mp.msg.NOTHING_OBJ)
+		mp:message 'NOTHING_OBJ'
 	end
 end
 
@@ -14062,39 +14128,39 @@ function mp:Take(w, wh)
 		return
 	end
 	if w == std.me() then
-		p (mp.msg.Take.SELF)
+		mp:message 'Take.SELF'
 		return
 	end
 	if have(w) then
-		p (mp.msg.Take.HAVE)
+		mp:message 'Take.HAVE'
 		return
 	end
 	local n = mp:trace(std.me(), function(v)
 		if v == w then return true end
 	end)
 	if n then
-		p (mp.msg.Take.WHERE)
+		mp:message 'Take.WHERE'
 		return
 	end
 	if mp:animate(w) then
-		p (mp.msg.Take.LIFE)
+		mp:message 'Take.LIFE'
 		return
 	end
 	if w:has'static' then
-		p (mp.msg.Take.STATIC)
+		mp:message 'Take.STATIC'
 		return
 	end
 	if w:has'scenery' then
-		p (mp.msg.Take.SCENERY)
+		mp:message 'Take.SCENERY'
 		return
 	end
 	if w:where() and not w:where():type'room' and
 		not w:where():has'container' and
 		not w:where():has'supporter' then
 		if w:has'worn' and mp:animate(w:where()) then
-			p (mp.msg.Take.WORN)
+			mp:message 'Take.WORN'
 		else
-			p (mp.msg.Take.PARTOF)
+			mp:message 'Take.PARTOF'
 		end
 		return
 	end
@@ -14103,7 +14169,7 @@ function mp:Take(w, wh)
 end
 
 function mp:after_Take(w)
-	p (mp.msg.Take.TAKE)
+	mp:message 'Take.TAKE'
 end
 
 mp.msg.Remove = {}
@@ -14117,14 +14183,14 @@ function mp:Remove(w, wh)
 		return
 	end
 	if w:where() ~= wh and w:inroom() ~= wh and w ~= everything then
-		p (mp.msg.Remove.WHERE)
+		mp:message 'Remove.WHERE'
 		return
 	end
 	mp:xaction('Take', w, wh)
 end
 
 function mp:after_Remove(w, wh)
-	p (mp.msg.Remove.REMOVE)
+	mp:message 'Remove.REMOVE'
 end
 
 mp.msg.Drop = {}
@@ -14135,7 +14201,7 @@ function mp:DropAll(wh)
 	for _, o in ipairs(oo) do
 		if o:hasnt 'concealed' then
 			empty = false
-			mp.msg.DROPPING_ALL(o)
+			mp:message('DROPPING_ALL', o)
 			mp:subaction('Drop', o)
 			if have(o) then
 				break
@@ -14143,7 +14209,7 @@ function mp:DropAll(wh)
 		end
 	end
 	if empty then
-		p(mp.msg.NOTHING_OBJ)
+		mp:message 'NOTHING_OBJ'
 	end
 end
 
@@ -14161,7 +14227,7 @@ function mp:Drop(w)
 		return
 	end
 	if w == std.me() then
-		p (mp.msg.Drop.SELF)
+		mp:message 'Drop.SELF'
 		return
 	end
 	if not mp:move(w, std.me():where()) then return true end
@@ -14169,7 +14235,7 @@ function mp:Drop(w)
 end
 
 function mp:after_Drop(w)
-	p (mp.msg.Drop.DROP)
+	mp:message 'Drop.DROP'
 end
 
 mp.msg.Insert = {}
@@ -14187,7 +14253,7 @@ function mp:Insert(w, wh)
 		return
 	end
 	if wh == w:where() then
-		p (mp.msg.Insert.ALREADY)
+		mp:message 'Insert.ALREADY'
 		return
 	end
 	if wh == std.me():where() or mp:compass_dir(wh, 'd_to') then
@@ -14208,7 +14274,7 @@ function mp:Insert(w, wh)
 		if v == w then return true end
 	end)
 	if n or w == wh then
-		p (mp.msg.Insert.WHERE)
+		mp:message 'Insert.WHERE'
 		return
 	end
 
@@ -14221,11 +14287,11 @@ function mp:Insert(w, wh)
 			mp:xaction("PutOn", w, wh)
 			return
 		end
-		p(mp.msg.Insert.NOTCONTAINER)
+		mp:message 'Insert.NOTCONTAINER'
 		return
 	end
 	if not wh:has'open' then
-		p(mp.msg.Insert.CLOSED)
+		mp:message 'Insert.CLOSED'
 		return
 	end
 	if not mp:move(w, wh) then return true end
@@ -14236,7 +14302,7 @@ function mp:after_Insert(w, wh)
 	if mp:runmethods('after', 'Receive', wh, w) then
 		return
 	end
-	p(mp.msg.Insert.INSERT)
+	mp:message 'Insert.INSERT'
 end
 
 mp.msg.PutOn = {}
@@ -14270,14 +14336,14 @@ function mp:PutOn(w, wh)
 		if v == w then return true end
 	end)
 	if n or w == wh then
-		p (mp.msg.PutOn.WHERE)
+		mp:message 'PutOn.WHERE'
 		return
 	end
 	if mp:runmethods('before', 'Receive', wh, w) then
 		return
 	end
 	if not wh:has'supporter' then
-		p(mp.msg.PutOn.NOTSUPPORTER)
+		mp:message 'PutOn.NOTSUPPORTER'
 		return
 	end
 	if not mp:move(w, wh) then return true end
@@ -14288,7 +14354,7 @@ function mp:after_PutOn(w, wh)
 	if mp:runmethods('after', 'Receive', wh, w) then
 		return
 	end
-	p(mp.msg.PutOn.PUTON)
+	mp:message 'PutOn.PUTON'
 end
 
 mp.msg.ThrowAt = {}
@@ -14322,10 +14388,10 @@ function mp:ThrowAt(w, wh)
 			mp:xaction("PutOn", w, wh)
 			return
 		end
-		p(mp.msg.ThrowAt.NOTLIFE)
+		mp:message 'ThrowAt.NOTLIFE'
 		return
 	end
-	p(mp.msg.ThrowAt.THROW)
+	mp:message 'ThrowAt.THROW'
 end
 
 mp.msg.Wear = {}
@@ -14338,11 +14404,11 @@ function mp:Wear(w)
 		return
 	end
 	if not w:has'clothing' then
-		p (mp.msg.Wear.NOTCLOTHES)
+		mp:message 'Wear.NOTCLOTHES'
 		return
 	end
 	if w:has'worn' then
-		p (mp.msg.Wear.WORN)
+		mp:message 'Wear.WORN'
 		return
 	end
 	w:attr'worn'
@@ -14350,7 +14416,7 @@ function mp:Wear(w)
 end
 
 function mp:after_Wear(w)
-	p (mp.msg.Wear.WEAR)
+	mp:message 'Wear.WEAR'
 end
 
 mp.msg.Disrobe = {}
@@ -14360,7 +14426,7 @@ function mp:Disrobe(w)
 		return
 	end
 	if not have(w) or not w:has'worn' then
-		p (mp.msg.Disrobe.NOTWORN)
+		mp:message 'Disrobe.NOTWORN'
 		return
 	end
 	w:attr'~worn'
@@ -14368,7 +14434,7 @@ function mp:Disrobe(w)
 end
 
 function mp:after_Disrobe(w)
-	p (mp.msg.Disrobe.DISROBE)
+	mp:message 'Disrobe.DISROBE'
 end
 
 mp.msg.SwitchOn = {}
@@ -14378,11 +14444,11 @@ function mp:SwitchOn(w)
 		return
 	end
 	if not w:has'switchable' then
-		p (mp.msg.SwitchOn.NONSWITCHABLE)
+		mp:message 'SwitchOn.NONSWITCHABLE'
 		return
 	end
 	if w:has'on' then
-		p (mp.msg.SwitchOn.ALREADY)
+		mp:message 'SwitchOn.ALREADY'
 		return
 	end
 	w:attr'on'
@@ -14390,7 +14456,7 @@ function mp:SwitchOn(w)
 end
 
 function mp:after_SwitchOn(w)
-	p (mp.msg.SwitchOn.SWITCHON)
+	mp:message 'SwitchOn.SWITCHON'
 end
 
 mp.msg.SwitchOff = {}
@@ -14400,11 +14466,11 @@ function mp:SwitchOff(w)
 		return
 	end
 	if not w:has'switchable' then
-		p (mp.msg.SwitchOff.NONSWITCHABLE)
+		mp:message 'SwitchOff.NONSWITCHABLE'
 		return
 	end
 	if not w:has'on' then
-		p (mp.msg.SwitchOff.ALREADY)
+		mp:message 'SwitchOff.ALREADY'
 		return
 	end
 	w:attr'~on'
@@ -14412,7 +14478,7 @@ function mp:SwitchOff(w)
 end
 
 function mp:after_SwitchOff(w)
-	p (mp.msg.SwitchOff.SWITCHOFF)
+	mp:message 'SwitchOff.SWITCHOFF'
 end
 
 mp.msg.Search = {}
@@ -14423,7 +14489,7 @@ end
 
 mp.msg.LookUnder = {}
 function mp:LookUnder(w)
-	p (mp.msg.LookUnder.NOTHING)
+	mp:message 'LookUnder.NOTHING'
 end
 
 mp.msg.Eat = {}
@@ -14433,7 +14499,7 @@ function mp:Eat(w)
 		return
 	end
 	if not w:has'edible' then
-		p (mp.msg.Eat.NOTEDIBLE)
+		mp:message 'Eat.NOTEDIBLE'
 		return
 	end
 	if mp:check_held(w) then
@@ -14447,7 +14513,7 @@ function mp:Eat(w)
 end
 
 function mp:after_Eat(w)
-	p (mp.msg.Eat.EAT)
+	mp:message 'Eat.EAT'
 end
 
 mp.msg.Taste = {}
@@ -14470,13 +14536,13 @@ function mp:Taste(w)
 end
 
 function mp:after_Taste(w)
-	p (mp.msg.Taste.TASTE)
+	mp:message 'Taste.TASTE'
 end
 
 mp.msg.Drink = {}
 
 function mp:after_Drink(w)
-	p (mp.msg.Drink.IMPOSSIBLE)
+	mp:message 'Drink.IMPOSSIBLE'
 end
 
 mp.msg.Transfer = {}
@@ -14511,11 +14577,11 @@ function mp:Push(w)
 		return
 	end
 	if w:has 'static' then
-		p (mp.msg.Push.STATIC)
+		mp:message 'Push.STATIC'
 		return
 	end
 	if w:has 'scenery' then
-		p (mp.msg.Push.SCENERY)
+		mp:message 'Push.SCENERY'
 		return
 	end
 	if mp:check_live(w) then
@@ -14525,7 +14591,7 @@ function mp:Push(w)
 end
 
 function mp:after_Push()
-	p (mp.msg.Push.PUSH)
+	mp:message 'Push.PUSH'
 end
 
 mp.msg.Pull = {}
@@ -14535,11 +14601,11 @@ function mp:Pull(w)
 		return
 	end
 	if w:has 'static' then
-		p (mp.msg.Pull.STATIC)
+		mp:message 'Pull.STATIC'
 		return
 	end
 	if w:has 'scenery' then
-		p (mp.msg.Pull.SCENERY)
+		mp:message 'Pull.SCENERY'
 		return
 	end
 	if mp:check_live(w) then
@@ -14549,7 +14615,7 @@ function mp:Pull(w)
 end
 
 function mp:after_Pull()
-	p (mp.msg.Pull.PULL)
+	mp:message 'Pull.PULL'
 end
 
 mp.msg.Turn = {}
@@ -14559,11 +14625,11 @@ function mp:Turn(w)
 		return
 	end
 	if w:has 'static' then
-		p (mp.msg.Turn.STATIC)
+		mp:message 'Turn.STATIC'
 		return
 	end
 	if w:has 'scenery' then
-		p (mp.msg.Turn.SCENERY)
+		mp:message 'Turn.SCENERY'
 		return
 	end
 	if mp:check_live(w) then
@@ -14573,12 +14639,12 @@ function mp:Turn(w)
 end
 
 function mp:after_Turn()
-	p (mp.msg.Turn.TURN)
+	mp:message 'Turn.TURN'
 end
 
 mp.msg.Wait = {}
 function mp:after_Wait()
-	p (mp.msg.Wait.WAIT)
+	mp:message 'Wait.WAIT'
 end
 
 mp.msg.Rub = {}
@@ -14591,13 +14657,13 @@ function mp:Rub(w)
 end
 
 function mp:after_Rub()
-	p (mp.msg.Rub.RUB)
+	mp:message 'Rub.RUB'
 end
 
 mp.msg.Sing = {}
 
 function mp:after_Sing(w)
-	p (mp.msg.Sing.SING)
+	mp:message 'Sing.SING'
 end
 
 mp.msg.Touch = {}
@@ -14607,18 +14673,18 @@ function mp:Touch(w)
 		return
 	end
 	if w == std.me() then
-		p (mp.msg.Touch.MYSELF)
+		mp:message 'Touch.MYSELF'
 		return
 	end
 	if self:animate(w) then
-		p (mp.msg.Touch.LIVE)
+		mp:message 'Touch.LIVE'
 		return
 	end
 	return false
 end
 
 function mp:after_Touch()
-	p (mp.msg.Touch.TOUCH)
+	mp:message 'Touch.TOUCH'
 end
 
 mp.msg.Give = {}
@@ -14631,7 +14697,7 @@ function mp:Give(w, wh)
 		return
 	end
 	if wh == std.me() then
-		p (mp.msg.Give.MYSELF)
+		mp:message 'Give.MYSELF'
 		return
 	end
 	if mp:runmethods('life', 'Give', wh, w) then
@@ -14644,7 +14710,7 @@ function mp:Give(w, wh)
 end
 
 function mp:after_Give()
-	p (mp.msg.Give.GIVE)
+	mp:message 'Give.GIVE'
 end
 
 mp.msg.Show = {}
@@ -14670,7 +14736,7 @@ function mp:Show(w, wh)
 end
 
 function mp:after_Show()
-	p (mp.msg.Show.SHOW)
+	mp:message 'Show.SHOW'
 end
 
 mp.msg.Burn = {}
@@ -14687,16 +14753,16 @@ end
 
 function mp:after_Burn(w, wh)
 	if wh then
-		p (mp.msg.Burn.BURN2)
+		mp:message 'Burn.BURN2'
 	else
-		p (mp.msg.Burn.BURN)
+		mp:message 'Burn.BURN'
 	end
 end
 
 mp.msg.Wake = {}
 
 function mp:after_Wake()
-	p (mp.msg.Wake.WAKE)
+	mp:message 'Wake.WAKE'
 end
 
 mp.msg.WakeOther = {}
@@ -14713,14 +14779,14 @@ function mp:WakeOther(w)
 		return
 	end
 	if not mp:animate(w) then
-		p (mp.msg.WakeOther.NOTLIVE)
+		mp:message 'WakeOther.NOTLIVE'
 		return
 	end
 	return false
 end
 
 function mp:after_WakeOther()
-	p (mp.msg.WakeOther.WAKE)
+	mp:message 'WakeOther.WAKE'
 end
 
 mp.msg.PushDir = {}
@@ -14735,7 +14801,7 @@ function mp:PushDir(w, wh)
 end
 
 function mp:after_PushDir()
-	p (mp.msg.PushDir.PUSH)
+	mp:message 'PushDir.PUSH'
 end
 
 mp.msg.Kiss = {}
@@ -14747,23 +14813,23 @@ function mp:Kiss(w)
 		return
 	end
 	if not mp:animate(w) then
-		p (mp.msg.Kiss.NOTLIVE)
+		mp:message 'Kiss.NOTLIVE'
 		return
 	end
 	if w == std.me() then
-		p (mp.msg.Kiss.MYSELF)
+		mp:message 'Kiss.MYSELF'
 		return
 	end
 	return false
 end
 
 function mp:after_Kiss()
-	p (mp.msg.Kiss.KISS)
+	mp:message 'Kiss.KISS'
 end
 
 mp.msg.Think = {}
 function mp:after_Think()
-	p (mp.msg.Think.THINK)
+	mp:message 'Think.THINK'
 end
 
 mp.msg.Smell = {}
@@ -14776,10 +14842,10 @@ end
 
 function mp:after_Smell(w)
 	if w then
-		p (mp.msg.Smell.SMELL2)
+		mp:message 'Smell.SMELL2'
 		return
 	end
-	p (mp.msg.Smell.SMELL)
+	mp:message 'Smell.SMELL'
 end
 
 mp.msg.Listen = {}
@@ -14792,10 +14858,10 @@ end
 
 function mp:after_Listen(w)
 	if w then
-		p (mp.msg.Listen.LISTEN2)
+		mp:message 'Listen.LISTEN2'
 		return
 	end
-	p (mp.msg.Listen.LISTEN)
+	mp:message 'Listen.LISTEN'
 end
 
 mp.msg.Dig = {}
@@ -14816,14 +14882,14 @@ end
 
 function mp:after_Dig(w, wh)
 	if wh then
-		p (mp.msg.Dig.DIG3)
+		mp:message 'Dig.DIG3'
 		return
 	end
 	if w then
-		p (mp.msg.Dig.DIG2)
+		mp:message 'Dig.DIG2'
 		return
 	end
-	p (mp.msg.Dig.DIG)
+	mp:message 'Dig.DIG'
 end
 
 mp.msg.Cut = {}
@@ -14848,9 +14914,9 @@ end
 
 function mp:after_Cut(w, wh)
 	if wh then
-		p (mp.msg.Cut.CUT2)
+		mp:message 'Cut.CUT2'
 	else
-		p (mp.msg.Cut.CUT)
+		mp:message 'Cut.CUT'
 	end
 end
 
@@ -14866,7 +14932,7 @@ function mp:Tear(w)
 end
 
 function mp:after_Tear()
-	p (mp.msg.Tear.TEAR)
+	mp:message 'Tear.TEAR'
 end
 
 mp.msg.Tie = {}
@@ -14886,10 +14952,10 @@ end
 
 function mp:after_Tie(w, wh)
 	if wh then
-		p (mp.msg.Tie.TIE2)
+		mp:message 'Tie.TIE2'
 		return
 	end
-	p (mp.msg.Tie.TIE)
+	mp:message 'Tie.TIE'
 end
 
 mp.msg.Blow = {}
@@ -14905,7 +14971,7 @@ function mp:Blow(w)
 end
 
 function mp:after_Blow()
-	p (mp.msg.Blow.BLOW)
+	mp:message 'Blow.BLOW'
 end
 
 mp.msg.Attack = {}
@@ -14922,22 +14988,22 @@ end
 
 function mp:after_Attack(w)
 	if mp:animate(w) then
-		p (mp.msg.Attack.LIFE)
+		mp:message 'Attack.LIFE'
 		return
 	end
-	p (mp.msg.Attack.ATTACK)
+	mp:message 'Attack.ATTACK'
 end
 
 mp.msg.Sleep = {}
 
 function mp:after_Sleep()
-	p (mp.msg.Sleep.SLEEP)
+	mp:message 'Sleep.SLEEP'
 end
 
 mp.msg.Swim = {}
 
 function mp:after_Swim()
-	p (mp.msg.Swim.SWIM)
+	mp:message 'Swim.SWIM'
 end
 
 mp.msg.Consult = {}
@@ -14950,7 +15016,7 @@ function mp:Consult(w, wh)
 end
 
 function mp:after_Consult()
-	p (mp.msg.Consult.CONSULT)
+	mp:message 'Consult.CONSULT'
 end
 
 mp.msg.Fill = {}
@@ -14962,12 +15028,12 @@ function mp:Fill(w)
 end
 
 function mp:after_Fill()
-	p (mp.msg.Fill.FILL)
+	mp:message 'Fill.FILL'
 end
 
 mp.msg.Jump = {}
 function mp:after_Jump()
-	p (mp.msg.Jump.JUMP)
+	mp:message 'Jump.JUMP'
 end
 
 mp.msg.JumpOver = {}
@@ -14979,12 +15045,12 @@ function mp:JumpOver(w)
 end
 
 function mp:after_JumpOver()
-	p (mp.msg.JumpOver.JUMPOVER)
+	mp:message 'JumpOver.JUMPOVER'
 end
 
 mp.msg.WaveHands = {}
 function mp:after_WaveHands()
-	p (mp.msg.WaveHands.WAVE)
+	mp:message 'WaveHands.WAVE'
 end
 
 mp.msg.Wave = {}
@@ -14999,7 +15065,7 @@ function mp:Wave(w)
 end
 
 function mp:after_Wave()
-	p (mp.msg.Wave.WAVE)
+	mp:message 'Wave.WAVE'
 end
 
 function mp:Climb(w)
@@ -15010,7 +15076,7 @@ mp.msg.GetOff = {}
 
 function mp:GetOff(w)
 	if not w and std.me():where() == std.here() then
-		p (mp.msg.GetOff.NOWHERE)
+		mp:message 'GetOff.NOWHERE'
 		return
 	end
 	mp:xaction('Exit', w)
@@ -15025,7 +15091,7 @@ function mp:Buy(w)
 end
 
 function mp:after_Buy()
-	p (mp.msg.Buy.BUY)
+	mp:message 'Buy.BUY'
 end
 
 mp.msg.Talk = {}
@@ -15041,7 +15107,7 @@ function mp:Talk(w)
 		return
 	end
 	if w == std.me() then
-		p (mp.msg.Talk.SELF)
+		mp:message 'Talk.SELF'
 		return
 	end
 	if mp:runmethods('life', 'Talk', w) then
@@ -15052,10 +15118,10 @@ end
 
 function mp:after_Talk(w)
 	if not mp:animate(w) then
-		p (mp.msg.Talk.NOTLIVE)
+		mp:message 'Talk.NOTLIVE'
 		return
 	end
-	p (mp.msg.Talk.LIVE)
+	mp:message 'Talk.LIVE'
 end
 
 mp.msg.Tell = {}
@@ -15064,11 +15130,11 @@ function mp:Tell(w, t)
 		return
 	end
 	if #self.vargs == 0 then
-		p (mp.msg.Tell.EMPTY)
+		mp:message 'Tell.EMPTY'
 		return
 	end
 	if w == std.me() then
-		p (mp.msg.Tell.SELF)
+		mp:message 'Tell.SELF'
 		return
 	end
 	if mp:runmethods('life', 'Tell', w, t) then
@@ -15079,10 +15145,10 @@ end
 
 function mp:after_Tell(w)
 	if not mp:animate(w) then
-		p (mp.msg.Tell.NOTLIVE)
+		mp:message 'Tell.NOTLIVE'
 		return
 	end
-	p (mp.msg.Tell.LIVE)
+	mp:message 'Tell.LIVE'
 end
 
 mp.msg.Ask = {}
@@ -15091,11 +15157,11 @@ function mp:Ask(w, t)
 		return
 	end
 	if #self.vargs == 0 then
-		p (mp.msg.Ask.EMPTY)
+		mp:message 'Ask.EMPTY'
 		return
 	end
 	if w == std.me() then
-		p (mp.msg.Ask.SELF)
+		mp:message 'Ask.SELF'
 		return
 	end
 	if mp:runmethods('life', 'Ask', w, t) then
@@ -15106,10 +15172,10 @@ end
 
 function mp:after_Ask(w)
 	if not mp:animate(w) then
-		p (mp.msg.Ask.NOTLIVE)
+		mp:message 'Ask.NOTLIVE'
 		return
 	end
-	p (mp.msg.Ask.LIVE)
+	mp:message 'Ask.LIVE'
 end
 
 function mp:AskFor(w, t)
@@ -15131,11 +15197,11 @@ function mp:Answer(w, t)
 		return
 	end
 	if #self.vargs == 0 then
-		p (mp.msg.Answer.EMPTY)
+		mp:message 'Answer.EMPTY'
 		return
 	end
 	if w == std.me() then
-		p (mp.msg.Answer.SELF)
+		mp:message 'Answer.SELF'
 		return
 	end
 	if mp:runmethods('life', 'Answer', w, t) then
@@ -15146,20 +15212,20 @@ end
 
 function mp:after_Answer(w)
 	if not mp:animate(w) then
-		p (mp.msg.Answer.NOTLIVE)
+		mp:message 'Answer.NOTLIVE'
 		return
 	end
-	p (mp.msg.Answer.LIVE)
+	mp:message 'Answer.LIVE'
 end
 
 mp.msg.Yes = {}
 
 function mp:after_Yes()
-	p (mp.msg.Yes.YES)
+	mp:message 'Yes.YES'
 end
 
 function mp:after_No()
-	p (mp.msg.Yes.YES)
+	mp:message 'Yes.YES'
 end
 
 mp.msg.Use = {}
@@ -15172,11 +15238,11 @@ function mp:Use(w)
 end
 
 function mp:after_Use()
-	p (mp.msg.Use.USE)
+	mp:message 'Use.USE'
 end
 
 function mp:MetaHelp()
-	pn(mp.msg.HELP)
+	pn(mp:mesg 'HELP')
 end
 
 function mp:MetaTranscript()
@@ -15214,7 +15280,7 @@ mp.msg.MetaRestart = {}
 local old_pre_input
 
 function mp:MetaRestart()
-	p (mp.msg.MetaRestart.RESTART)
+	mp:message 'MetaRestart.RESTART'
 	if old_pre_input then return end
 	old_pre_input = mp.pre_input
 	std.rawset(mp, 'pre_input', function(_, str)
@@ -15302,7 +15368,7 @@ function mp:MetaUndo()
 		snapshots:restore(nr - 1)
 		table.remove(snapshots.data, nr)
 	else
-		p(mp.msg.MetaUndo.EMPTY)
+		mp:message 'MetaUndo.EMPTY'
 	end
 end
 
@@ -15487,9 +15553,9 @@ instead.get_title = function(_)
 	local col = instead.theme_var('win.col.fg')
 	local score = ''
 	if mp.score then
-		score = fmt.tab('70%', 'center')..fmt.nb(mp.msg.TITLE_SCORE .. tostring(mp.score))
+		score = fmt.tab('70%', 'center')..fmt.nb(mp:mesg('TITLE_SCORE') .. tostring(mp.score))
 	end
-	local moves = fmt.tab('100%', 'right')..fmt.nb(mp.msg.TITLE_TURNS .. tostring(game:time() - 1))
+	local moves = fmt.tab('100%', 'right')..fmt.nb(mp:mesg('TITLE_TURNS') .. tostring(game:time() - 1))
 	return iface:left((title.. score .. moves).."\n".. iface:img(string.format("box:%dx1,%s", w, col)))
 end
 
