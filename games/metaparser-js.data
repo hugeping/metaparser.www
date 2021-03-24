@@ -7301,6 +7301,17 @@ function mp.msg.SCORE(d)
 		pn ("{$fmt em|(Score is decreased by ", d, ")}")
 	end
 end
+
+function mp.msg.MULTIDSC(oo, inv)
+	if #oo > 0 then
+		local s = oo[1]
+		if not s:hint'proper' and not s:hint'surname' then
+			p "the"
+		end
+	end
+	mp:multidsc(oo, inv)
+end
+
 mp.door.word = "door"
 mp.msg.TITLE_SCORE = "Score: "
 mp.msg.TITLE_TURNS = "Turns: "
@@ -7314,10 +7325,10 @@ mp.msg.CUTSCENE_HELP = "Press <Enter> or enter {$fmt em|next} to continue."
 mp.msg.DLG_HELP = "Enter number to select the phrase."
 mp.msg.NO_ALL = "This verb can not be used with all."
 mp.msg.DROPPING_ALL = function(w)
-	pn (iface:em("(dropping "..w:noun'вн'..")"))
+	pn (iface:em("(dropping "..w:the_noun()..")"))
 end
 mp.msg.TAKING_ALL = function(w)
-	pn (iface:em("(taking "..w:noun'вн'..")"))
+	pn (iface:em("(taking "..w:the_noun()..")"))
 end
 mp.msg.TAKE_BEFORE = function(w)
 	pn (iface:em("(taking "..w:the_noun().." before)"))
@@ -7340,7 +7351,7 @@ end
 
 function mp.shortcut.thenoun(hint)
 	local w = str_split(hint, ",")
-	if #w ~= 2 then
+	if #w ~= 1 then
 		return ""
 	end
 	local ob = mp:shortcut_obj(w[1])
@@ -7559,7 +7570,7 @@ mp.msg.HINT_WORDS = "Maybe you meant"
 mp.msg.HINT_OR = "or"
 mp.msg.HINT_AND = "and"
 mp.msg.AND = "and"
-mp.msg.MULTIPLE = "Here are"
+mp.msg.MULTIPLE = "Here is"
 mp.msg.LIVE_ACTION = function(w)
 	p (mp:It(w), " would not like it.")
 end
@@ -7583,7 +7594,7 @@ mp.msg.ACCESS1 = "{#Thefirst} {#is/#first} not accessible from here."
 mp.msg.ACCESS2 = "{#Thesecond} {#is/#second} not accessible from here."
 
 mp.msg.Look.HEREIS = "Here is"
-mp.msg.Look.HEREARE = "Here are"
+mp.msg.Look.HEREARE = "Here is"
 
 mp.msg.NOROOM = function(w)
 	if w == std.me() then
@@ -7613,7 +7624,7 @@ mp.msg.Enter.ALREADY = "{#Me} {#is/#me} already {#if_has/#first,supporter,on,in}
 mp.msg.Enter.INV = "{#Me} {#is/#me} unable to enter the thing {#me} {#is/#me} holding."
 mp.msg.Enter.IMPOSSIBLE = "But {#me} {#is/#me} unable to enter in/on {#thefirst}."
 mp.msg.Enter.CLOSED = "{#Thefirst} {#is/#first} closed and {#me} can't enter there."
-mp.msg.Enter.ENTERED = "{#Me} {#word/залезать,нст,#me} {#if_has/#first,supporter,на,в} {#first/вн}."
+mp.msg.Enter.ENTERED = "{#Me} {#present/#me,get} {#if_has/#first,supporter,on,into} {#thefirst}."
 mp.msg.Enter.DOOR_NOWHERE = "{#Thefirst} {#present/#first,lead} nowhere."
 mp.msg.Enter.DOOR_CLOSED = "{#Thefirst} {#is/#first} closed."
 
@@ -7622,7 +7633,7 @@ mp.msg.Walk.WALK = "But {#thefirst} {#is/#first} already here."
 mp.msg.Walk.NOWHERE = "Where?"
 mp.msg.Walk.INV = "{#Me} {#is/#me} holding this."
 
-mp.msg.Enter.EXITBEFORE = "{#Me} {#present/#me,need} to {#if_has/#where,supporter,get off from,leave} {#thefirst} first."
+mp.msg.Enter.EXITBEFORE = "{#Me} {#present/#me,need} to {#if_has/#where,supporter,get off from,leave} {#thenoun/#where} first."
 
 mp.msg.Exit.NOTHERE = "But {#me} {#is/#me} not {#if_has/#first,supporter,on,in} {#thefirst}."
 mp.msg.Exit.NOWHERE = "But {#me} {#have/#me} no way to exit."
@@ -7636,7 +7647,7 @@ mp.msg.Inv.INV = "{#Me} {#have/#me}"
 
 mp.msg.Open.OPEN = "{#Me} {#present/#me,open} {#thefirst}."
 mp.msg.Open.NOTOPENABLE = "{#Thefirst} {#is/#first} not openable."
-mp.msg.Open.WHENOPEN = "{#Thenoun/first/} {#is/#first} already opened."
+mp.msg.Open.WHENOPEN = "{#Thenoun/#first} {#is/#first} already opened."
 mp.msg.Open.WHENLOCKED = "It's seems that {#thefirst} {#is/#first} locked."
 
 mp.msg.Close.CLOSE = "{#Me} {#present/#me,close} {#thefirst}."
@@ -7919,10 +7930,18 @@ std.mod_init(function(_)
 Verb { "#Walk",
 	"go,walk,run,enter",
 	"{compass1} : Walk",
-	"in|into|inside {noun}/scene,enterable : Enter",
+	"in|into|inside|on {noun}/scene,enterable : Enter",
 	"{noun}/scene : Walk",
 	"{compass2}: Walk",
 	"outside|out|away: Exit" }
+
+Verb { "#Sit",
+	"sit,stand",
+	"?down in|into|inside|on {noun}/scene,enterable : Enter" }
+
+Verb { "#Lie",
+	"lie",
+	"down in|into|inside|on {noun}/scene,enterable : Enter" }
 
 Verb { "#Exit",
 	"exit,out",
@@ -8022,6 +8041,7 @@ Verb {
 
 Verb {
 	"#Remove",
+	"remove",
 	"~ {noun}/held : Disrobe",
 	"{noun} from {noun} : Remove",
 	"~ {noun}/scene : Take",
@@ -8408,7 +8428,7 @@ end)
 std.phr.default_Event = "Exam"
 
 Verb ({"~ say", "{select} : Exam" }, std.dlg)
-Verb ({'#Next', "more|next", "Next" }, mp.cutscene)
+Verb ({'#Next', "more,next", "Next" }, mp.cutscene)
 Verb ({'#Exam', "~ exam/ine", "Look" }, std.dlg)
 
 mp.cutscene.default_Verb = "more"
@@ -8656,7 +8676,7 @@ mp = std.obj {
 	detailed_inv = false;
 	daemons = std.list {};
 	{
-		version = "1.10";
+		version = "1.11";
 		cache = { tokens = {}, nouns = false };
 		scope = std.list {};
 		logfile = false;
@@ -9875,7 +9895,6 @@ function mp:match(verb, w, compl)
 	local hints = {}
 	local unknown = {}
 	local multi = {}
-	local vargs
 	local parsed_verb = {}
 	local fixed_verb = verb.verb[verb.word_nr]
 	fixed_verb = fixed_verb.word .. (fixed_verb.morph or '')
@@ -9895,6 +9914,7 @@ function mp:match(verb, w, compl)
 		local rlev = 1
 		local need_required = false
 		local default = false
+		local vargs
 		for lev, v in ipairs(d.pat) do -- pattern arguments
 			if v == '*' or v == '~*' then
 				vargs = true -- found
@@ -12335,7 +12355,7 @@ Verb {
 	"сказать,сообщи/ть,сообщу,рассказать,расскаж/ите",
 	"{noun}/дт,live о|об|обо|про * : Tell",
 	"~ * {noun}/дт,live : Tell reverse",
-	"~ {noun}/дт * : AskTo",
+	"~ {noun}/дт * : Tell"
 }
 
 Verb {
@@ -13234,6 +13254,10 @@ mp.compass_dir = function(_, w, dir)
 	return w ^ ('@'..dir)
 end
 
+mp.msg.MULTIDSC = function(oo, inv)
+	return mp:multidsc(oo, inv)
+end
+
 function mp:multidsc(oo, inv)
 	local t = {}
 	local dup = {}
@@ -13276,6 +13300,14 @@ function mp:multidsc(oo, inv)
 	p "."
 end
 
+-- Default priority in content
+function mp:defpri(w)
+	if mp:animate(w) then
+		return -1
+	end
+	return 0
+end
+
 mp.msg.Exam = {}
 --- Display the object contents
 function mp:content(w, exam)
@@ -13315,8 +13347,8 @@ function mp:content(w, exam)
 		self:objects(self.persistent, oo, false)
 	end
 	std.sort(oo, function (a, b)
-		a = std.tonum(a.pri) or 0
-		b = std.tonum(b.pri) or 0
+		a = std.tonum(a.pri) or mp:defpri(a)
+		b = std.tonum(b.pri) or mp:defpri(b)
 		if a == b then
 			return nil
 		end
@@ -13387,7 +13419,7 @@ function mp:content(w, exam)
 			mp:message 'Exam.IS'
 		end
 		-- p(oo[1]:noun(1), ".")
-		mp:multidsc(oo)
+		mp:message('MULTIDSC', oo)
 	else
 		if std.me():where() == w or std.here() == w then
 			mp:message('Look.HEREARE', w)
@@ -13399,7 +13431,7 @@ function mp:content(w, exam)
 			end
 			mp:message 'Exam.ARE'
 		end
-		mp:multidsc(oo)
+		mp:message('MULTIDSC', oo)
 	end
 -- expand?
 	for _, o in ipairs(expand) do
@@ -13784,7 +13816,7 @@ function mp:after_Inv()
 		mp:detailed_Inv(std.me(), 1)
 	else
 		p()
-		mp:multidsc(oo, true)
+		mp:message('MULTIDSC', oo, true)
 	end
 end
 
