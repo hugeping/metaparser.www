@@ -31,7 +31,6 @@ local feedback=[[
 	<div class="col-sm-12">
 	<h2>Контакты и поддержка</h2>
 	<p>Привет! Меня зовут Пётр и я занимаюсь движком <a href="https://instead-hub.github.io">INSTEAD</a> с 2009 года.<br/>
-	Если вы хотите добавить свою игру в каталог, сообщите мне об этом на форуме <a href="http://instead-games.ru">instead-games.ru</a> или по почте <a href="mailto:gl00my@mail.ru">gl00my[at]mail.ru</a><br/>
 	<br/>Настоящая интерактивная литература в виде игр с текстовым вводом &mdash; сегодня почти забытый жанр.<br/>
 	Если вы заинтересованы в существовании проекта, вы можете рассказать о нём друзьям, повесить на рабочем месте <a href="resistance/resistance.pdf">листовку-прикол</a>, сделать пожертвование или написать отзыв.<br/>
 	<br/>Ваша поддержка помогает двигаться вперёд!</p>
@@ -39,42 +38,14 @@ local feedback=[[
 	</div>
 ]]
 local donate=[[
-<div style="overflow-x: visible" class="donate">
-<form action="https://www.paypal.com/cgi-bin/webscr" method="post" target="_top">
-<input type="hidden" name="cmd" value="_s-xclick">
-<input type="hidden" name="hosted_button_id" value="QJDNRPU8B2FEJ">
-<input type="image" src="https://www.paypalobjects.com/ru_RU/RU/i/btn/btn_donateCC_LG.gif" border="0" name="submit" alt="PayPal — более безопасный и легкий способ оплаты через Интернет!">
-<img alt="" border="0" src="https://www.paypalobjects.com/ru_RU/i/scr/pixel.gif" width="1" height="1">
-</form>
-<iframe src="https://money.yandex.ru/quickpay/shop-widget?writer=buyer&targets=&targets-hint=%D0%9D%D0%B0%20%D0%BF%D1%80%D0%BE%D0%B5%D0%BA%D1%82&default-sum=50&button-text=11&payment-type-choice=on&mobile-payment-type-choice=on&hint=&successURL=&quickpay=shop&account=41001612955830" width="450" height="224" frameborder="0" allowtransparency="true" scrolling="no"></iframe>
-</div>
+<b><a href="https://paypal.me/hugeping">Paypal</a></b><br/>
+<b><a href="https://yoomoney.ru/to/41001612955830">Я-Деньги</a></b><br/><br/>
+Со мной можно связаться по почте <a href="mailto:gl00my@mail.ru">gl00my[at]mail.ru</a><br/>
 ]]
-local counter=[[
-<!-- Yandex.Metrika counter --> <script type="text/javascript" > (function(m,e,t,r,i,k,a){m[i]=m[i]||function(){(m[i].a=m[i].a||[]).push(arguments)}; m[i].l=1*new Date();k=e.createElement(t),a=e.getElementsByTagName(t)[0],k.async=1,k.src=r,a.parentNode.insertBefore(k,a)}) (window, document, "script", "https://mc.yandex.ru/metrika/tag.js", "ym"); ym(53163859, "init", { clickmap:true, trackLinks:true, accurateTrackBounce:true }); </script> <noscript><div><img src="https://mc.yandex.ru/watch/53163859" style="position:absolute; left:-9999px;" alt="" /></div></noscript> <!-- /Yandex.Metrika counter -->
-]]
-local disquss =[[
-<div id="disqus_thread"></div>
-<script>
-
-/**
-*  RECOMMENDED CONFIGURATION VARIABLES: EDIT AND UNCOMMENT THE SECTION BELOW TO INSERT DYNAMIC VALUES FROM YOUR PLATFORM OR CMS.
-*  LEARN WHY DEFINING THESE VARIABLES IS IMPORTANT: https://disqus.com/admin/universalcode/#configuration-variables*/
-/*
-var disqus_config = function () {
-this.page.url = PAGE_URL;  // Replace PAGE_URL with your page's canonical URL variable
-this.page.identifier = PAGE_IDENTIFIER; // Replace PAGE_IDENTIFIER with your page's unique identifier variable
-};
-*/
-(function() { // DON'T EDIT BELOW THIS LINE
-var d = document, s = d.createElement('script');
-s.src = 'https://metaparser.disqus.com/embed.js';
-s.setAttribute('data-timestamp', +new Date());
-(d.head || d.body).appendChild(s);
-})();
-</script>
-<noscript>Please enable JavaScript to view the <a href="https://disqus.com/?ref_noscript">comments powered by Disqus.</a></noscript>
-]]
-
+local counter=[[]]
+local disquss =[[]]
+disquss = ''
+counter = ''
 local footer=feedback..donate..disquss..counter..[[
 </div> <!-- container -->
 </body>
