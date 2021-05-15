@@ -23,33 +23,33 @@ instead.menu = instead_menu
 instead.clear = instead_clear
 instead.tiny = true -- minimal version
 instead.run_js = instead_js
+instead.savename = instead_savename
 
 std.mod_start(function()
 	local mp = std.ref '@metaparser'
 	if mp then
-		mp.msg.CUTSCENE_HELP = "Для продолжения нажмите <ввод> или введите {$fmt em|дальше}."
-		mp.msg.CUTSCENE_MORE = "^Для продолжения нажмите <ввод> или введите {$fmt em|дальше}."
+		mp.msg.CUTSCENE_MORE = '^'..mp.msg.CUTSCENE_HELP
 		std.rawset(mp, 'clear', function(self)
 			self.text = ''
+			-- uncomment to clear screen on move
 --			instead.clear();
 		end)
-		mp.msg.HELP = [[{$fmt b|КАК ИГРАТЬ?}^^
-Вводите ваши действия в виде простых предложений вида: глагол -- существительное. Например:^
-> открыть дверь^
-> отпереть дверь ключом^
-> идти на север^
-> взять кепку^
-^
-Чтобы снова увидеть описание обстановки, введите "осмотреть", "осм" или просто нажмите "ввод".^
-^
-Чтобы осмотреть предмет, введите "осмотреть книгу" или просто "книга".^
-^
-Попробуйте "осмотреть себя" и узнать, кто вы.^
-^
-Чтобы узнать какие предметы у вас с собой, наберите "инвентарь" или "инв".^
-^
-Для перемещений используйте стороны света, например: "идти на север" или "север" или просто "с".^
-Кроме сторон света можно перемещаться вверх ("вверх" или "вв") и вниз ("вниз" или "вн").]]
+		VerbExtend ({
+			"#MetaSave",
+			"*:MetaSave",
+		}, mp)
+		VerbExtend ({
+			"#MetaLoad",
+			"*:MetaLoad",
+		}, mp)
+		std.rawset(mp, 'MetaSave', function(self, w)
+			instead.savename(w)
+			instead.menu 'save'
+		end)
+		std.rawset(mp, 'MetaLoad', function(self, w)
+			instead.savename(w)
+			instead.menu 'load'
+		end)
 	end
 end)
 local std = stead
@@ -133,6 +133,8 @@ function iface:img() return '' end
 function iface:imgl() return '' end
 
 function iface:imgr() return '' end
+
+function iface:anchor() return '' end
 
 function iface:nb(t)
 	return t == '' and ' ' or t
@@ -959,6 +961,531 @@ std.mod_init(function()
 		pl = std.ref 'player',
 	}
 end)
+local std = stead
+local input = std.ref '@input'
+local instead = std.ref '@instead'
+
+-- luacheck: no self
+function input:event(...)
+-- luacheck: self
+	local a
+	for _, v in std.ipairs {...} do
+		a = (a and (a..', ') or ' ') .. std.dump(v)
+	end
+	return '@user_event'.. a or ''
+end
+
+std.mod_cmd(function(cmd)
+	if cmd[1] ~= '@user_event' then
+		return
+	end
+	local r, v =  std.call(instead, 'onevent', cmd[2])
+	if not r and not v then -- nothing todo
+		return nil, false
+	end
+	return r, v
+end)
+-- luacheck: globals const global declare
+
+local declarations = {}
+local variables = {}
+local std = stead
+
+local type = std.type
+local rawget = std.rawget
+local rawset = std.rawset
+local pairs = std.pairs
+local table = std.table
+local next = std.next
+
+local function __declare_one(k, v, t)
+	local link
+
+	if type(k) ~= 'string' then -- k:find("^[a-zA-Z_][a-zA-Z0-9_]*$") then
+		std.err ("Wrong declaration name: "..k, 3)
+	end
+	if declarations[k] then
+		std.err ("Duplicate declaration: "..k, 3)
+	end
+
+	link = rawget(_G, k)
+
+	declarations[k] = { value = v, type = t, link = link }
+
+	if link and v ~= link then
+		std.err("Overwite global declaration: "..std.tostr(k), 3)
+	end
+
+	if t == 'global' then
+		if type(v) == 'function' and not std.functions[v] then
+			std.err("Use declare to declare function: "..k, 3)
+		end
+		rawset(_G, k, v)
+		variables[k] = true
+	end
+	if type(v) == 'function' and not std.functions[v] then
+		std.functions[v] = k
+	end
+	if std.__in_init and std.is_obj(v, 'list') then
+		table.insert(v.__in_init, v)
+	end
+end
+
+local function __declare(n, t)
+	if stead.game then
+		std.err ("Use "..t.." only in global context", 2)
+	end
+	if type(n) == 'string' then
+		return function(v)
+			if v == nil then
+				v = false
+--				std.err("Wrong declaration: "..std.tostr(t), 2)
+			end
+			__declare_one(n, v, t)
+		end
+	end
+	if type(n) ~= 'table' then
+		std.err ("Wrong parameter to "..n, 2)
+	end
+	for k, v in std.pairs(n) do
+		__declare_one(k, v, t)
+	end
+	return n
+end
+
+function std.const(n)
+	return __declare(n, 'const')
+end
+
+function std.global(n)
+	return __declare(n, 'global')
+
+end
+
+function std.declare(n)
+	return __declare(n, 'declare')
+end
+
+local function do_depends(t, tables, deps)
+	if type(t) ~= 'table' then return end
+	if tables[t] then
+		deps[t] = tables[t]
+	end
+	for _, v in pairs(t) do
+		if type(v) == 'table' and not std.getmt(v) then
+			do_depends(v, tables, deps)
+		end
+	end
+end
+
+local function makedeps(nam, depends, deps)
+	local ndeps = {}
+	local rc = false
+
+	local t = rawget(_G, nam)
+	if type(t) ~= 'table' then
+		return
+	end
+	if type(depends[nam]) ~= 'table' then
+		return
+	end
+	local d = depends[nam]
+	for k, v in pairs(d) do
+		local dd = depends[v]
+		if dd and k ~= t then
+			ndeps[k] = v
+			rc = rc or makedeps(v, depends, deps)
+		end
+	end
+	if not next(ndeps) then
+		depends[nam] = nil
+		table.insert(deps, t)
+		rc = true
+	else
+		depends[nam] = ndeps
+	end
+	return rc
+end
+
+local function mod_save(fp)
+	-- save global variables
+	std.tables = {}
+	local tables = {}
+	local deps = {}
+	for k, v in pairs(declarations) do -- name all table variables
+		local o = rawget(_G, k) or v.value
+		if type(o) == 'table' then
+			if not tables[o] then
+				tables[o] = k
+			end
+		end
+	end
+
+	for k, _ in pairs(variables) do
+		local d = {}
+		local o = rawget(_G, k)
+		do_depends(o, tables, d)
+		if k == tables[o] then -- self depend
+			d[o] = nil
+		end
+		if next(d) then
+			deps[k] = d
+		end
+	end
+
+	std.tables = tables -- save all depends
+
+	for k, _ in pairs(variables) do -- write w/o deps
+		local o = rawget(_G, k)
+		if not deps[k] then
+			std.save_var(o, fp, k)
+		end
+	end
+	for k, _ in pairs(variables) do
+		local d = {}
+		while makedeps(k, deps, d) do
+			for i=1, #d do
+				std.save_var(d[i], fp, k)
+			end
+			d = {}
+		end
+	end
+end
+
+local function mod_init()
+	std.setmt(_G, {
+	__index = function(_, n)
+		local d = declarations[n]
+		if d then --
+			if std.game and (d.type ~= 'const') then
+				rawset(_, n, d.value)
+			end
+			return d.value
+		end
+		local f = std.getinfo(2, "S").source
+		std.err ("Uninitialized global variable: "..n.." in "..f, 2)
+	end;
+	__newindex = function(t, k, v)
+		if not std.game and std.is_obj(v) then -- autodeclare objects
+			__declare_one(k, v, 'declare')
+		end
+		local d = declarations[k]
+		if d then
+			if v == d.value then
+				return --nothing todo
+			end
+			if not std.game then
+				d.value = v
+				return
+			end
+			if d.type == 'const' then
+				std.err ("Modify read-only constant: "..k, 2)
+			else
+				d.value = v
+				rawset(t, k, v)
+			end
+			return
+		end
+		if std.game or type(v) ~= 'function' then
+			local f = std.getinfo(2, "S").source
+			if f ~= '=[C]' then
+				std.err ("Set uninitialized variable: "..k.." in "..f, 2)
+			end
+		end
+		rawset(t, k, v)
+	end
+	})
+end
+
+std.obj {
+	nam = '@declare';
+	ini = function(_, ...)
+-- init all list objs
+		for _, v in pairs(declarations) do
+			if std.is_obj(v.value, 'list') then
+				v.value:__ini(...)
+			end
+		end
+	end;
+	declarations = function()
+		return declarations;
+	end;
+	variables = function()
+		return variables
+	end;
+}
+
+local function mod_done()
+	std.setmt(_G, {})
+	local decl = {}
+	for k, v in pairs(declarations) do
+		local o = std.rawget(_G, k) or v.value
+		if std.is_system(o) then -- save system declarations
+			decl[k] = v
+		elseif not v.link then
+			rawset(_G, k, nil)
+		end
+	end
+	std.tables = {}
+	std.functions = {}
+	declarations = decl
+	variables = {}
+end
+
+std.mod_init(mod_init)
+std.mod_done(mod_done)
+std.mod_save(mod_save)
+
+const = std.const
+global = std.global
+declare = std.declare
+-- luacheck: globals snd
+snd = stead.ref '@snd'local std = stead
+
+std.mod_step(function(state)
+	if not state then
+		return
+	end
+	if std.here().noinv and not std.me().__inv_disabled then
+		std.me():close()
+		std.me().__inv_disabled = true
+	elseif std.me().__inv_disabled and not std.here().noinv then
+		std.me():open()
+		std.me().__inv_disabled = nil
+	end
+end)
+
+std.mod_done(function()
+	if std.me().__inv_disabled then
+		std.me():open()
+		std.me().__inv_disabled = nil
+	end
+end)
+-- luacheck: globals theme
+theme = stead.ref '@theme'
+local std = stead
+
+std.mod_step(function(state)
+	if not state then
+		return
+	end
+	if std.here().nolife and std.game:live() then
+		std.game:lifeoff()
+	elseif not std.game:live() and not std.here().nolife then
+		std.game:lifeon()
+	end
+end)
+
+std.mod_done(function()
+	if not std.game:live() then
+		std.game:lifeon()
+	end
+end)
+-- luacheck: globals timer
+timer = stead.ref '@timer'
+globals = {
+	'stead',
+	'LANG',
+}
+local std = stead
+local type = std.type
+local iface = std.ref '@iface'
+
+-- luacheck: globals fmt
+
+fmt = std.obj {
+	nam = '@format';
+	para = false;
+	nopara = '_';
+	para_space = '    ';
+	quotes = true;
+	dash = true;
+	filter = nil;
+}
+
+std.obj {
+	nam = '$fmt';
+	act = function(_, w, ...)
+		if type(w) ~= 'string' or not fmt[w] then
+			return w
+		end
+		return fmt[w](...)
+	end
+}
+
+std.format = function(r, state)
+	local utf8 = (std.ref 'game'.codepage == 'UTF-8' or std.ref 'game'.codepage == 'utf-8')
+
+	if type(r) ~= 'string' then
+		return r
+	end
+
+	if type(fmt.filter) == 'function' then
+		r = fmt.filter(r, state)
+	end
+
+	if utf8 then
+		if fmt.dash then
+			r = r:gsub("%-%-%-*", { ['--'] = '—' })
+			r = r:gsub("[ \t]+—", iface:nb('').."—"); -- do not break dash
+			r = r:gsub("^([^ \t]*)—[ \t]+", "%1— ");
+			r = r:gsub("(\n[^ \t]*)—[ \t]+", "%1— ");
+		end
+		if fmt.quotes then
+			r = r:gsub('_"','«'):gsub('"_',"»");
+			r = r:gsub('"([^"]*)"','«%1»');
+			r = r:gsub(',,','„'):gsub("''",'”');
+		end
+	end
+	if not state then
+		return r
+	end
+
+	if fmt.para then
+		r = r:gsub('\n([^\n])', '\001%1'):gsub('\001[ \t]*'..fmt.nopara,'\n'):
+			gsub('\001[ \t]*', '\n'..iface:nb(fmt.para_space));
+		r = r:gsub('^[ \t]*', '\001'):gsub('\001[ \t]*'..fmt.nopara,''):
+			gsub('\001[ \t]*', iface:nb(fmt.para_space));
+	end
+	return r
+end
+
+function fmt.em(str)
+	return iface:em(str)
+end
+
+function fmt.c(str)
+	return iface:center(str)
+end
+
+function fmt.j(str)
+	return iface:just(str)
+end
+
+function fmt.l(str)
+	return iface:left(str)
+end
+
+function fmt.r(str)
+	return iface:right(str)
+end
+
+function fmt.b(str)
+	return iface:bold(str)
+end
+
+function fmt.top(str)
+	return iface:top(str)
+end
+
+function fmt.bottom(str)
+	return iface:bottom(str)
+end
+
+function fmt.middle(str)
+	return iface:middle(str)
+end
+
+function fmt.nb(str)
+	return iface:nb(str)
+end
+
+function fmt.anchor(str)
+	return iface:anchor(str)
+end
+
+function fmt.img(str)
+	return iface:img(str)
+end
+
+function fmt.imgl(str)
+	return iface:imgl(str)
+end
+
+function fmt.imgr(str)
+	return iface:imgr(str)
+end
+
+function fmt.u(str)
+	return iface:under(str)
+end
+
+function fmt.st(str)
+	return iface:st(str)
+end
+
+function fmt.tab(str, al)
+	return iface:tab(str, al)
+end
+
+function fmt.y(str, al)
+	return iface:y(str, al)
+end
+-- luacheck: globals snapshots
+
+local std = stead
+
+local SNAPSHOT = false
+local INWRITE = false
+
+local snap = std.obj {
+	nam = '@snapshots';
+	data = {};
+	save = function(s, ...)
+		if INWRITE then return end
+		return std.obj.save(s, ...)
+	end;
+	write = function(s, name)
+		name = name or 'default'
+		local fp = { -- fake file object
+			data = '';
+			write = function(self, str)
+				self.data = self.data .. str
+			end;
+		}
+		INWRITE = true std:save(fp) INWRITE = false
+		s.data[name] = fp.data
+	end;
+	make = function(_, name)
+		SNAPSHOT = name or 'default'
+	end;
+	exists = function(s, name)
+		name = name or 'default'
+		return s.data[name]
+	end;
+	remove = function(s, name)
+		name = name or 'default'
+		s.data[name] = nil
+	end;
+	restore = function(s, name) -- like std:load()
+		name = name or 'default'
+		if not s:exists(name) then
+			return false
+		end
+		std:reset()
+		std.ref 'game':__ini()
+		local f, err = std.eval(s.data[name])
+		if not f then
+			std.err(err, 2)
+		end
+		f();
+		std.ref 'game':__ini()
+		std.ref 'game':__start(true)
+		return std.nop()
+	end;
+}
+
+snapshots = snap
+
+std.mod_cmd(function()
+	if SNAPSHOT then
+		snap:write(SNAPSHOT)
+		SNAPSHOT = nil
+	end
+end)
+
+-- std.mod_done(function()
+-- end)
 -- luacheck: read globals iface
 
 local std = stead
@@ -1339,10 +1866,59 @@ std.phr = std.class({
 -- luacheck: globals sprite pixels
 sprite = stead.ref '@sprite'
 pixels = stead.ref '@pixels'
-globals = {
-	'stead',
-	'LANG',
-}
+-- luacheck: globals prefs
+
+local std = stead
+
+local preferences = std.obj {
+	nam = '@prefs',
+	load = function(_)
+		local name = std.savepath() .. '/prefs';
+		local f, err = std.loadfile(name);
+		if not f then
+			return false, err
+		end
+		local strict = std.nostrict; std.nostrict = true
+		f();
+		std.nostrict = strict
+		return true
+	end,
+	store = function(s)
+		return s:save()
+	end,
+	save = function(s) -- save prefs on every save
+		local name = std.savepath() .. '/prefs';
+		local name_tmp = name..'.tmp'
+		local fp, _ = std.io.open(name_tmp, "wb");
+		if not fp then
+			return false
+		end
+		std.obj.save(s, fp, 'std "@prefs"')
+		fp:flush();
+		fp:close();
+		std.os.remove(name)
+		return std.os.rename(name_tmp, name);
+	end,
+	purge = function(_)
+		local name = std.savepath() .. '/prefs';
+		return std.os.remove(name);
+	end
+};
+
+local loaded
+
+std.mod_start(function()
+	loaded = prefs:load()
+end)
+
+std.mod_done(function()
+	if loaded then
+		prefs:store()
+		loaded = false
+	end
+end)
+
+prefs = preferences
 -- STEAD3 API
 
 -- luacheck: globals iface init start stead
@@ -4232,2098 +4808,6 @@ end
 require "declare"
 require "dlg"
 require "stdlib"
--- luacheck: globals const global declare
-
-local declarations = {}
-local variables = {}
-local std = stead
-
-local type = std.type
-local rawget = std.rawget
-local rawset = std.rawset
-local pairs = std.pairs
-local table = std.table
-local next = std.next
-
-local function __declare_one(k, v, t)
-	local link
-
-	if type(k) ~= 'string' then -- k:find("^[a-zA-Z_][a-zA-Z0-9_]*$") then
-		std.err ("Wrong declaration name: "..k, 3)
-	end
-	if declarations[k] then
-		std.err ("Duplicate declaration: "..k, 3)
-	end
-
-	link = rawget(_G, k)
-
-	declarations[k] = { value = v, type = t, link = link }
-
-	if link and v ~= link then
-		std.err("Overwite global declaration: "..std.tostr(k), 3)
-	end
-
-	if t == 'global' then
-		if type(v) == 'function' and not std.functions[v] then
-			std.err("Use declare to declare function: "..k, 3)
-		end
-		rawset(_G, k, v)
-		variables[k] = true
-	end
-	if type(v) == 'function' and not std.functions[v] then
-		std.functions[v] = k
-	end
-	if std.__in_init and std.is_obj(v, 'list') then
-		table.insert(v.__in_init, v)
-	end
-end
-
-local function __declare(n, t)
-	if stead.game then
-		std.err ("Use "..t.." only in global context", 2)
-	end
-	if type(n) == 'string' then
-		return function(v)
-			if v == nil then
-				v = false
---				std.err("Wrong declaration: "..std.tostr(t), 2)
-			end
-			__declare_one(n, v, t)
-		end
-	end
-	if type(n) ~= 'table' then
-		std.err ("Wrong parameter to "..n, 2)
-	end
-	for k, v in std.pairs(n) do
-		__declare_one(k, v, t)
-	end
-	return n
-end
-
-function std.const(n)
-	return __declare(n, 'const')
-end
-
-function std.global(n)
-	return __declare(n, 'global')
-
-end
-
-function std.declare(n)
-	return __declare(n, 'declare')
-end
-
-local function do_depends(t, tables, deps)
-	if type(t) ~= 'table' then return end
-	if tables[t] then
-		deps[t] = tables[t]
-	end
-	for _, v in pairs(t) do
-		if type(v) == 'table' and not std.getmt(v) then
-			do_depends(v, tables, deps)
-		end
-	end
-end
-
-local function makedeps(nam, depends, deps)
-	local ndeps = {}
-	local rc = false
-
-	local t = rawget(_G, nam)
-	if type(t) ~= 'table' then
-		return
-	end
-	if type(depends[nam]) ~= 'table' then
-		return
-	end
-	local d = depends[nam]
-	for k, v in pairs(d) do
-		local dd = depends[v]
-		if dd and k ~= t then
-			ndeps[k] = v
-			rc = rc or makedeps(v, depends, deps)
-		end
-	end
-	if not next(ndeps) then
-		depends[nam] = nil
-		table.insert(deps, t)
-		rc = true
-	else
-		depends[nam] = ndeps
-	end
-	return rc
-end
-
-local function mod_save(fp)
-	-- save global variables
-	std.tables = {}
-	local tables = {}
-	local deps = {}
-	for k, v in pairs(declarations) do -- name all table variables
-		local o = rawget(_G, k) or v.value
-		if type(o) == 'table' then
-			if not tables[o] then
-				tables[o] = k
-			end
-		end
-	end
-
-	for k, _ in pairs(variables) do
-		local d = {}
-		local o = rawget(_G, k)
-		do_depends(o, tables, d)
-		if k == tables[o] then -- self depend
-			d[o] = nil
-		end
-		if next(d) then
-			deps[k] = d
-		end
-	end
-
-	std.tables = tables -- save all depends
-
-	for k, _ in pairs(variables) do -- write w/o deps
-		local o = rawget(_G, k)
-		if not deps[k] then
-			std.save_var(o, fp, k)
-		end
-	end
-	for k, _ in pairs(variables) do
-		local d = {}
-		while makedeps(k, deps, d) do
-			for i=1, #d do
-				std.save_var(d[i], fp, k)
-			end
-			d = {}
-		end
-	end
-end
-
-local function mod_init()
-	std.setmt(_G, {
-	__index = function(_, n)
-		local d = declarations[n]
-		if d then --
-			if std.game and (d.type ~= 'const') then
-				rawset(_, n, d.value)
-			end
-			return d.value
-		end
-		local f = std.getinfo(2, "S").source
-		std.err ("Uninitialized global variable: "..n.." in "..f, 2)
-	end;
-	__newindex = function(t, k, v)
-		if not std.game and std.is_obj(v) then -- autodeclare objects
-			__declare_one(k, v, 'declare')
-		end
-		local d = declarations[k]
-		if d then
-			if v == d.value then
-				return --nothing todo
-			end
-			if not std.game then
-				d.value = v
-				return
-			end
-			if d.type == 'const' then
-				std.err ("Modify read-only constant: "..k, 2)
-			else
-				d.value = v
-				rawset(t, k, v)
-			end
-			return
-		end
-		if std.game or type(v) ~= 'function' then
-			local f = std.getinfo(2, "S").source
-			if f ~= '=[C]' then
-				std.err ("Set uninitialized variable: "..k.." in "..f, 2)
-			end
-		end
-		rawset(t, k, v)
-	end
-	})
-end
-
-std.obj {
-	nam = '@declare';
-	ini = function(_, ...)
--- init all list objs
-		for _, v in pairs(declarations) do
-			if std.is_obj(v.value, 'list') then
-				v.value:__ini(...)
-			end
-		end
-	end;
-	declarations = function()
-		return declarations;
-	end;
-	variables = function()
-		return variables
-	end;
-}
-
-local function mod_done()
-	std.setmt(_G, {})
-	local decl = {}
-	for k, v in pairs(declarations) do
-		local o = std.rawget(_G, k) or v.value
-		if std.is_system(o) then -- save system declarations
-			decl[k] = v
-		elseif not v.link then
-			rawset(_G, k, nil)
-		end
-	end
-	std.tables = {}
-	std.functions = {}
-	declarations = decl
-	variables = {}
-end
-
-std.mod_init(mod_init)
-std.mod_done(mod_done)
-std.mod_save(mod_save)
-
-const = std.const
-global = std.global
-declare = std.declare
--- luacheck: globals prefs
-
-local std = stead
-
-local preferences = std.obj {
-	nam = '@prefs',
-	load = function(_)
-		local name = std.savepath() .. '/prefs';
-		local f, err = std.loadfile(name);
-		if not f then
-			return false, err
-		end
-		local strict = std.nostrict; std.nostrict = true
-		f();
-		std.nostrict = strict
-		return true
-	end,
-	store = function(s)
-		return s:save()
-	end,
-	save = function(s) -- save prefs on every save
-		local name = std.savepath() .. '/prefs';
-		local name_tmp = name..'.tmp'
-		local fp, _ = std.io.open(name_tmp, "wb");
-		if not fp then
-			return false
-		end
-		std.obj.save(s, fp, 'std "@prefs"')
-		fp:flush();
-		fp:close();
-		std.os.remove(name)
-		return std.os.rename(name_tmp, name);
-	end,
-	purge = function(_)
-		local name = std.savepath() .. '/prefs';
-		return std.os.remove(name);
-	end
-};
-
-local loaded
-
-std.mod_start(function()
-	loaded = prefs:load()
-end)
-
-std.mod_done(function()
-	if loaded then
-		prefs:store()
-		loaded = false
-	end
-end)
-
-prefs = preferences
--- luacheck: globals timer
-timer = stead.ref '@timer'
-local std = stead
-local type = std.type
-local iface = std.ref '@iface'
-
--- luacheck: globals fmt
-
-fmt = std.obj {
-	nam = '@format';
-	para = false;
-	nopara = '_';
-	para_space = '    ';
-	quotes = true;
-	dash = true;
-	filter = nil;
-}
-
-std.obj {
-	nam = '$fmt';
-	act = function(_, w, ...)
-		if type(w) ~= 'string' or not fmt[w] then
-			return w
-		end
-		return fmt[w](...)
-	end
-}
-
-std.format = function(r, state)
-	local utf8 = (std.ref 'game'.codepage == 'UTF-8' or std.ref 'game'.codepage == 'utf-8')
-
-	if type(r) ~= 'string' then
-		return r
-	end
-
-	if type(fmt.filter) == 'function' then
-		r = fmt.filter(r, state)
-	end
-
-	if utf8 then
-		if fmt.dash then
-			r = r:gsub("%-%-%-*", { ['--'] = '—' })
-			r = r:gsub("[ \t]+—", iface:nb('').."—"); -- do not break dash
-			r = r:gsub("^([^ \t]*)—[ \t]+", "%1— ");
-			r = r:gsub("(\n[^ \t]*)—[ \t]+", "%1— ");
-		end
-		if fmt.quotes then
-			r = r:gsub('_"','«'):gsub('"_',"»");
-			r = r:gsub('"([^"]*)"','«%1»');
-			r = r:gsub(',,','„'):gsub("''",'”');
-		end
-	end
-	if not state then
-		return r
-	end
-
-	if fmt.para then
-		r = r:gsub('\n([^\n])', '\001%1'):gsub('\001[ \t]*'..fmt.nopara,'\n'):
-			gsub('\001[ \t]*', '\n'..iface:nb(fmt.para_space));
-		r = r:gsub('^[ \t]*', '\001'):gsub('\001[ \t]*'..fmt.nopara,''):
-			gsub('\001[ \t]*', iface:nb(fmt.para_space));
-	end
-	return r
-end
-
-function fmt.em(str)
-	return iface:em(str)
-end
-
-function fmt.c(str)
-	return iface:center(str)
-end
-
-function fmt.j(str)
-	return iface:just(str)
-end
-
-function fmt.l(str)
-	return iface:left(str)
-end
-
-function fmt.r(str)
-	return iface:right(str)
-end
-
-function fmt.b(str)
-	return iface:bold(str)
-end
-
-function fmt.top(str)
-	return iface:top(str)
-end
-
-function fmt.bottom(str)
-	return iface:bottom(str)
-end
-
-function fmt.middle(str)
-	return iface:middle(str)
-end
-
-function fmt.nb(str)
-	return iface:nb(str)
-end
-
-function fmt.anchor(str)
-	return iface:anchor(str)
-end
-
-function fmt.img(str)
-	return iface:img(str)
-end
-
-function fmt.imgl(str)
-	return iface:imgl(str)
-end
-
-function fmt.imgr(str)
-	return iface:imgr(str)
-end
-
-function fmt.u(str)
-	return iface:under(str)
-end
-
-function fmt.st(str)
-	return iface:st(str)
-end
-
-function fmt.tab(str, al)
-	return iface:tab(str, al)
-end
-
-function fmt.y(str, al)
-	return iface:y(str, al)
-end
--- luacheck: globals theme
-theme = stead.ref '@theme'
-local std = stead
-
-std.mod_step(function(state)
-	if not state then
-		return
-	end
-	if std.here().nolife and std.game:live() then
-		std.game:lifeoff()
-	elseif not std.game:live() and not std.here().nolife then
-		std.game:lifeon()
-	end
-end)
-
-std.mod_done(function()
-	if not std.game:live() then
-		std.game:lifeon()
-	end
-end)
-local std = stead
-local input = std.ref '@input'
-local instead = std.ref '@instead'
-
--- luacheck: no self
-function input:event(...)
--- luacheck: self
-	local a
-	for _, v in std.ipairs {...} do
-		a = (a and (a..', ') or ' ') .. std.dump(v)
-	end
-	return '@user_event'.. a or ''
-end
-
-std.mod_cmd(function(cmd)
-	if cmd[1] ~= '@user_event' then
-		return
-	end
-	local r, v =  std.call(instead, 'onevent', cmd[2])
-	if not r and not v then -- nothing todo
-		return nil, false
-	end
-	return r, v
-end)
--- luacheck: globals snd
-snd = stead.ref '@snd'local std = stead
-
-std.mod_step(function(state)
-	if not state then
-		return
-	end
-	if std.here().noinv and not std.me().__inv_disabled then
-		std.me():close()
-		std.me().__inv_disabled = true
-	elseif std.me().__inv_disabled and not std.here().noinv then
-		std.me():open()
-		std.me().__inv_disabled = nil
-	end
-end)
-
-std.mod_done(function()
-	if std.me().__inv_disabled then
-		std.me():open()
-		std.me().__inv_disabled = nil
-	end
-end)
--- luacheck: globals snapshots
-
-local std = stead
-
-local SNAPSHOT = false
-local INWRITE = false
-
-local snap = std.obj {
-	nam = '@snapshots';
-	data = {};
-	save = function(s, ...)
-		if INWRITE then return end
-		return std.obj.save(s, ...)
-	end;
-	write = function(s, name)
-		name = name or 'default'
-		local fp = { -- fake file object
-			data = '';
-			write = function(self, str)
-				self.data = self.data .. str
-			end;
-		}
-		INWRITE = true std:save(fp) INWRITE = false
-		s.data[name] = fp.data
-	end;
-	make = function(_, name)
-		SNAPSHOT = name or 'default'
-	end;
-	exists = function(s, name)
-		name = name or 'default'
-		return s.data[name]
-	end;
-	remove = function(s, name)
-		name = name or 'default'
-		s.data[name] = nil
-	end;
-	restore = function(s, name) -- like std:load()
-		name = name or 'default'
-		if not s:exists(name) then
-			return false
-		end
-		std:reset()
-		std.ref 'game':__ini()
-		local f, err = std.eval(s.data[name])
-		if not f then
-			std.err(err, 2)
-		end
-		f();
-		std.ref 'game':__ini()
-		std.ref 'game':__start(true)
-		return std.nop()
-	end;
-}
-
-snapshots = snap
-
-std.mod_cmd(function()
-	if SNAPSHOT then
-		snap:write(SNAPSHOT)
-		SNAPSHOT = nil
-	end
-end)
-
--- std.mod_done(function()
--- end)
-local std = stead
-local instead = std.ref '@instead'
--- luacheck: read globals instead_savepath
--- luacheck: read globals instead_gamepath
--- luacheck: read globals instead_exepath
--- luacheck: globals io
-instead.savepath = instead_savepath
-std.savepath = instead_savepath
-instead.gamepath = instead_gamepath
-instead.exepath = instead_exepath
-
-io.open = stead.hook(io.open, function(f, path, acc, ...)
-	if std.type(path) == 'string' and path:sub(1, 1) ~= '/' and not
-		(path:sub(2, 2) == ':' and path:find("^[A-Z]", 1) == 1) then
-		path = instead.gamepath()..'/'..path
-	end
-	return f(path, acc, ...)
-end)
-This code uses dictionary files from the http://aot.ru project that is
-covered by the terms of the LGPL license.
-
-Dictionary files:
-https://sourceforge.net/p/seman/svn/HEAD/tree/trunk/Dicts/Morph/Russian/
-
-License:
-https://sourceforge.net/p/seman/svn/HEAD/tree/trunk/copying
---luacheck: no self
-
-local curdir = std.getinfo(1).source:gsub("^(.+[\\/])[^\\/]+$", "%1"):gsub("^@", "");
-
-local mrd = {
-	lang = false;
-	words = {};
-	dirs = {''};
-	dict_file = 'dict.mrd';
-}
-
-local msg = dprint or print
-local function debug(...)
-	if DEBUG then
-		dprint(...)
-	end
-end
-local function cache_add(cache, key, val)
-	table.insert(cache.list, 1, key)
-	local len = #cache.list
-	if len > (cache.len or 128) then
-		local okey = cache.list[len]
-		table.remove(cache.list, len)
-		cache.hash[okey] = nil
-	end
-	cache.hash[key] = val
-end
-
-local function split(str, sep)
-	local words = {}
-	if not str then
-		return words
-	end
-	for w in str:gmatch(sep or "[^ \t]+") do
-		table.insert(words, w)
-	end
-	return words
-end
-
-local function empty(l)
-	l = l:gsub("[ \t]+", "")
-	return l == ""
-end
-
-function mrd:gramtab(path)
-	local f, e = io.open(path or 'rgramtab.tab', 'rb')
-	if not f then
-		return false, e
-	end
-	self.gram = {
-		an = {}; -- by ancodes
-		t = {}; -- by types
-	}
-	for l in f:lines() do
-		if not l:find("^[ \t]*//") and not empty(l) then -- not comments
-			local w = split(l)
-			if #w < 3 then
-				msg("Skipping gram: "..l)
-			else
-				local a = split(w[4], '[^,]+')
-				local an = {}
-				for _, v in ipairs(a) do
-					an[v] = true
-				end
-				an.t = w[3] -- type
-				self.gram.an[w[1]] = an;
-				self.gram.t[w[3]] = an;
-			end
-		end
-	end
-	f:close()
-end
-
-local function section(f, fn, ...)
-	local n = f:read("*line")
-	n = n and tonumber(n)
-	if not n then
-		return false
-	end
-	if n == 0 then
-		return true
-	end
-	for l in f:lines() do -- skip accents
-		if fn then fn(l, ...) end
-		n = n - 1
-		if n == 0 then
-			break
-		end
-	end
-	return true
-end
-
-local flex_filter
-
-local function flex_fn(l, flex, an)
-	l = l:gsub("//.*$", "")
-	local fl = {}
-	for w in l:gmatch("[^%%]+") do
-		local ww = split(w, "[^%*]+")
-		if #ww > 3 or #ww < 1 then
-			msg("Skip lex: ", w, l);
-		else
-			local f = { }
-			if #ww == 1 then
-				f.an = ww[1]
-				f.post = ''
-			else
-				f.post = ww[1]
-				f.an = ww[2]
-			end
-			f.pre = ww[3] or ''
-			local a = an[f.an]
-			if not a then
-				msg("Gram not found. Skip lex: "..f.an)
-			else
-				f.an_name = f.an
-				f.an = a
-				if flex_filter(f) then
-					f.filter = true
-				end
-				table.insert(fl, f)
-			end
-		end
-	end
-	table.insert(flex, fl)
-end
-
-local function pref_fn(l, pref)
-	local p = split(l, "[^,]+")
-	table.insert(pref, p)
-end
-
---[[
-local function dump(vv)
-	local s = ''
-	if type(vv) ~= 'table' then
-		return string.format("%s", tostring(vv))
-	end
-	for k, v in pairs(vv) do
-		s = s .. string.format("%s = %s ", k, v)
-	end
-	return s
-end
-
-local function gram_dump(v)
-	for _, f in ipairs(v.flex) do
-		local tt = v.pref .. f.pre .. v.t .. f.post
-		print("=== ", tt)
-		for _, v in pairs(f.an) do
-			print(_, v)
-		end
-	end
-end
-]]--
-local busy_cnt = 0
-
-local function word_fn(l, self, dict)
-	local norm = mrd.lang.norm
-	local words = self.words
-	local words_list = self.words_list
-	local w = split(l)
-	if #w ~= 6 then
-		msg("Skipping word: "..l)
-		return
-	end
-	if w[1] == '#' then w[1] = '' end
-	local nflex = tonumber(w[2]) or false
-	local an = w[5]
-	if an == '-' then an = false end
-	local an_name = an
-	local npref = tonumber(w[6]) or false
-	if not nflex then
-		msg("Skipping word:"..l)
-		return
-	end
-	nflex = self.flex[nflex + 1]
-	if not nflex then
-		msg("Wrong paradigm number for word: "..l)
-		return
-	end
-	if an then
-		an = self.gram.an[an]
-		if not an then
-			msg("Wrong ancode for word: "..l)
-			return
-		end
-	end
-	if npref then
-		npref = self.pref[npref + 1]
-		if not npref then
-			msg("Wrong prefix for word: "..l)
-			return
-		end
-	end
-	local t = w[1]
-	local num = 0
-	local used = false
-	for _, v in ipairs(nflex) do
-		if v.filter then
-		for _, pref in ipairs(npref or { '' }) do
-			local tt = norm(pref .. v.pre .. t .. v.post)
---			if tt == 'ЗАКРЕПЛЕН' then
---				gram_dump { t = t, pref = pref, flex = nflex, an = v.an }
---			end
-			if not dict or dict[tt] then
-				local a = {}
-				for kk, _ in pairs(an or {}) do
-					a[kk] = an[kk]
-				end
-				for kk, _ in pairs(v.an) do
-					a[kk] = v.an[kk]
-				end
-				local wds = words[tt] or {}
-				table.insert(wds,
-					{ t = t, pref = pref, flex = nflex, an = a })
-				nflex.used = true
-				used = true
-				if npref then
-					npref.used = true
-				end
-				num = num + 1
-				if #wds == 1 then
-					words[tt] = wds
-				end
-			end
-		end
-		end
-	end
-	if used then
-		table.insert(words_list, { t = w[1], flex = nflex, pref = npref, an = an_name })
-	end
-	self.words_nr = self.words_nr + num
-	busy_cnt = busy_cnt + 1
-	if busy_cnt > 1000 then
-		if std then std.busy(true) end
-		busy_cnt = 0
-	end
-	return
-end
-
-function mrd:load(path, dict)
-	local f, e = io.open(path or 'morphs.mrd', 'rb')
-	if not f then
-		return false, e
-	end
-	local flex = {}
-	flex_filter = mrd.lang.flex_filter
-	if not section(f, flex_fn, flex, self.gram.an) then
-		return false, "Error in section 1"
-	end
-	self.flex = flex
-	if not section(f) then
-		return false, "Error in section 2"
-	end
-	if not section(f) then
-		return false, "Error in section 3"
-	end
-	local pref = {}
-	if not section(f, pref_fn, pref) then
-		return false, "Error in section 4"
-	end
-	self.pref = pref
-	self.words_nr = 0
-	self.words = {}
-	self.words_list = {}
---	collectgarbage("stop")
-	if not section(f, word_fn, self, dict) then
---		collectgarbage("restart")
-		return false, "Error in section 4"
-	end
---	collectgarbage("restart")
-	msg("Generated: "..tostring(self.words_nr).." word(s)");
-	local crc = f:read("*line")
-	if crc then crc = tonumber(crc) end
-	f:close()
-	if std then std.busy(false) end
-	return true, crc
-end
-
-function mrd:dump(path, crc)
-	local f, e = io.open(path or 'dict.mrd', 'wb')
-	if not f then
-		return false, e
-	end
-	local n = 0
-	for _, v in ipairs(self.flex) do
-		if v.used then
-			v.norm_no = n
-			n = n + 1
-		end
-	end
-	f:write(string.format("%d\n", n))
-	for _, v in ipairs(self.flex) do
-		if v.used then
-			local s = ''
-			for _, vv in ipairs(v) do
-				s = s .. '%'
-				if vv.post == '' then
-					s = s..vv.an_name
-				else
-					s = s..vv.post..'*'..vv.an_name
-				end
-				if vv.pre ~= '' then
-					s = s .. '*'..vv.pre
-				end
-			end
-			f:write(s.."\n")
-		end
-	end
-	f:write("0\n")
-	f:write("0\n")
-	n = 0
-	for _, v in ipairs(self.pref) do
-		if v.used then
-			v.norm_no = n
-			n = n + 1
-		end
-	end
-	f:write(string.format("%d\n", n))
-	for _, v in ipairs(self.pref) do
-		if v.used then
-			local s = ''
-			for _, vv in ipairs(v) do
-				if s ~= '' then s = s .. ',' end
-				s = s .. vv
-			end
-			f:write(s.."\n")
-		end
-	end
-	f:write(string.format("%d\n", #self.words_list))
-	for _, v in ipairs(self.words_list) do
-		local s
-		if v.t == '' then
-			s = '#'
-		else
-			s = v.t
-		end
-		s = s ..' '..tostring(v.flex.norm_no)
-		s = s..' - -'
-		if v.an then
-			s = s .. ' '..v.an
-		else
-			s = s .. ' -'
-		end
-		if v.pref then
-			s = s ..' '..tostring(v.pref.norm_no)
-		else
-			s = s .. ' -'
-		end
-		f:write(s..'\n')
-	end
-	if crc then
-		f:write(string.format("%d\n", crc))
-	end
-	f:close()
-end
-
-local function gram2an(g)
-	local a = {}
-	for _, v in ipairs(g) do
-		if v:sub(1, 1) == '~' then
-			a[v:sub(2)] = false
-		else
-			a[v] = true
-		end
-	end
-	a.t = nil
-	return a
-end
-
-local lookup_cache = {
-	hash = {};
-	list = {};
-	len = 512;
-}
-
-local function hint_append(hint, h)
-	if h == "" or not h then return hint end
-	if hint == "" or not hint then return h end
-	return hint .. ',' .. h
-end
-
-function mrd:lookup(w, g)
-	local key  = ""
-	for _, v in ipairs(g or {}) do
-		key = hint_append(key, v)
-	end
-	key = w .. '/'..key
-	local cc = lookup_cache.hash[key]
-	if cc then
-		return cc.w, cc.g
-	end
-	w, g = self:__lookup(w, g)
-	cache_add(lookup_cache, key, { w = w, g = g })
-	return w, g
-end
-
-function mrd:__lookup(w, g)
-	local ow = w
-	local cap, upper = self.lang.is_cap(w)
-	local tt = self.lang.upper(self.lang.norm(w))
-	w = self.words[tt]
-	if not w then
-		return false, "No word in dictionary"
-	end
-	local res = {}
-
-	local gram_compat = self.lang.gram_compat
-	local gram_score = self.lang.gram_score
-
-	for _, v in ipairs(w) do
-		local flex = v.flex
-		local score = gram_score(v.an, g)
-		local t = v.an.t
-		for _, f in ipairs(flex) do
-			if gram_compat(v.an, f.an, gram2an(g)) then
-				local sc = gram_score(f.an, g)
-				if sc >= 0 then
-					if t ~= f.an.t then sc = sc - 1 end -- todo
---[[
-				local tt = v.pref .. f.pre .. v.t .. f.post
-				if tt == 'ЛЕВЫЙ' or tt == 'ЛЕВОГО' or tt == 'ШЛЕМОМ' then
-					print ("======looking for:", g.noun)
-					for _, v in pairs(g) do
-						print(_, v)
-					end
-					print ("======looking got:", score + sc, sc)
-					print(tt, v.t, score + sc)
-					for _, v in pairs(f.an) do
-						print(_, v)
-					end
-				end
-]]--
-					table.insert(res, { score = score + sc, pos = #res, word = v, flex = f })
-				end
-			end
-		end
-	end
-	if #res == 0 then
-		return ow, gram2an(g) -- false, "No gram"
-	end
-	table.sort(res, function(a, b)
-		if a.score == b.score then
-			return a.pos < b.pos
-		end
-		return a.score > b.score
-	end)
-
---[[
-	for i = 1, #res do
-		local w = res[i]
-		local tt = self.lang.lower(w.word.pref .. w.flex.pre .. w.word.t .. w.flex.post)
-		print(i, "res: ", tt, w.score)
-		if tt == 'красный' or tt == 'красного' then
-			for _, v in pairs(w.flex.an) do
-				print(_, v)
-			end
-		end
---		print(tt, w.score)
-	end
-]]--
-	w = res[1]
-	local gram = {}
-	for k, v in pairs(w.flex.an) do
-		gram[k] = v
-	end
-
-	for k, v in pairs(w.word.an) do
-		gram[k] = v
-	end
-
-	w = self.lang.lower(w.word.pref .. w.flex.pre .. w.word.t .. w.flex.post)
-	if upper then
-		w = self.lang.upper(w)
-	elseif cap then
-		w = self.lang.cap(w)
-	end
-
-	return w, gram
-end
-local word_match = "[^ \t,%-!/:%+&]+"
-local missed_words = {}
-
-local word_cache = { list = {}, hash = {} }
-
-function mrd:word(w, ob)
-	local cache = word_cache
-	if ob then
-		if not ob.__word_cache then
-			std.rawset(ob, '__word_cache', {
-					list = {},
-					hash = {},
-					len = 32,
-				})
-		end
-		cache = ob.__word_cache
-	end
-	local key = w
-	local c = cache.hash[key]
-	if c then
-		return std.clone(c[1]), std.clone(c[2])
-	end
-	local ow = w
-	local s, _ = w:find("/[^/]*$")
-	local g = {}
-	local grams = {}
-	local hints = ''
-	if s then
-		hints = w:sub(s + 1)
-		w = w:sub(1, s - 1)
-		g = split(hints, "[^, ]+")
-	end
-	local found = true
-	local noun = false
-	local lang = self.lang
-	w = w:gsub(word_match,
-		function(t)
-			if noun then return t end
-			local ww, gg
-			if ob then
-				ww, gg = self:dict(ob.__dict, t..'/'..hints)
-			end
-			if not ww then
-				ww, gg = self:dict(game.__dict, t..'/'..hints)
-			end
-			if not ww then
-				ww, gg = self:dict(self.__dict, t..'/'..hints)
-			end
-			noun = gg and gg[lang.gram_t.noun]
-			if not ww then
-				ww, gg = self:lookup(t, g)
-				noun = gg and gg.t == lang.gram_t.noun
-			end
-			if gg and (gg[lang.gram_t.proper] or gg[lang.gram_t.surname]) then
-				noun = false
-			end
-			if not ww then
-				found = false
-			else
-				table.insert(grams, gg)
-			end
-			return ww or t
-		end)
-	if not found then
-		if DEBUG and not tonumber(w) and not missed_words[w] then
-			missed_words[w] = true
-			debug("Can not find word: '"..ow.."'")
-		end
-	end
-	cache_add(cache, key, { w, grams })
-	return w, grams
-end
-
-function mrd:file(f, dict)
-	dict = dict or {}
-	local ff, e = io.open(f, "rb")
-	if not ff then
-		return false, e
-	end
-	debug("Added file: ", f)
-	for l in ff:lines() do
-		for w in l:gmatch('%-"[^"]+"') do
-			w = w:gsub('^%-"', ""):gsub('"$', "")
-			local words = split(w, '[^|]+')
-			for _, word in ipairs(words) do
-				word = word:gsub("/[^/]*$", "")
-				for ww in word:gmatch(word_match) do
-					local t = self.lang.upper(self.lang.norm(ww))
-					if not dict[t] and not t:find("%*$") then
-						dict[t] = true;
-						debug("mrd: Added word: ", ww)
-					end
-				end
-			end
-		end
-	end
-	ff:close()
-	return dict
-end
-
-local function str_hint(str)
---	str = str:gsub("^%+", "")
-	local s, _ = str:find("/[^/]*$")
-	if not s then
-		return str, ""
-	end
-	if s == 1 then
-		return "", str:sub(2)
-	end
-	return str:sub(1, s - 1), str:sub(s + 1)
-end
-
-local function str_strip(str)
-	return std.strip(str)
-end
-
-local function str_split(str, delim)
-	local a = std.split(str, delim)
-	for k, _ in ipairs(a) do
-		a[k] = str_strip(a[k])
-	end
-	return a
-end
-
-function mrd:dict(dict, word)
-	if not dict then return end
-	local tab = {}
-	local w, hints = str_hint(word)
-	hints = str_split(hints, ",")
-	local tt = dict[w]
-
-	if not tt then
-		return
-	end
-
-	for _, v in ipairs(tt) do
-		local whints = {}
-		local w, h = str_hint(v)
-		local hh = str_split(h, ",")
-		for _, vv in ipairs(hh) do
-			whints[vv] = true
-		end
-		local t = { w, score = 0, pos = #tab, w = w }
-		for _, hv in ipairs(hints) do
-			if hv:sub(1, 1) ~= '~' then
-				if whints[hv] then
-					t.score = t.score + 1
-				end
-			else
-				if whints[str_strip(hv:sub(2))] then
-					t.score = t.score - 1
-				end
-			end
-		end
-		t.hints = str_split(hint_append(tt.hints, h), ",")
-		if mrd.lang.gram_t.nom and whints[mrd.lang.gram_t.nom] then
-			t.score = t.score + 0.5
-		end
-		table.insert(tab, t)
-	end
-	if #tab == 0 then
-		return
-	end
-	table.sort(tab,
-		function(a, b)
-			if a.score == b.score then
-				return a.pos < b.pos
-			end
-			return a.score > b.score
-		end)
-	if tab[1].score > 0 then
-		return tab[1].w, gram2an(tab[1].hints)
-	end
-end
-
-function mrd.dispof(w)
-	if w.raw_word ~= nil then
-		local d = std.call(w, 'raw_word')
-		return d, true
-	end
-	if w.word ~= nil then
-		local d = std.call(w, 'word')
-		return d
-	end
-	return std.titleof(w) or std.nameof(w)
-end
-
-local obj_cache = { hash = {}, list = {}, len = 128 }
-
-function mrd:obj(w, n, nn)
-	local hint = ''
-	local hint2, disp, ob, raw
-	if type(w) == 'string' then
-		w, hint = str_hint(w)
-	elseif type(n) == 'string' then
-		hint = n
-		n = nn
-	end
-	if type(w) ~= 'string' then
---		w = std.object(w)
-		ob = w
-		disp, raw = self.dispof(w)
-	else
-		disp = w
-	end
-	local d = obj_cache.hash[disp]
-	if not d then
-		d = str_split(disp, '|')
-		if #d == 0 then
-			std.err("Wrong object display: ".. (disp or 'nil'), 2)
-		end
-	-- normalize
-		local nd = {}
-		for k, v in ipairs(d) do
-			w, hint2 = str_hint(v)
-			local dd = raw and { w } or str_split(w, ',')
-			for _, vv in ipairs(dd) do
-				table.insert(nd, { word = vv, hint = hint2 or '', alias = k, idx = _ })
---				for w in vv:gmatch("[^ ]+") do
---					table.insert(nd, { word = w, hint = hint2 or '', alias = k, idx = _ })
---				end
-			end
-		end
-		d = nd
-		cache_add(obj_cache, disp, d)
-	end
-	if type(n) == 'table' then
-		local ret = n
-		for _, v in ipairs(d) do
-			table.insert(ret, { word = v.word, hint = hint_append(hint, v.hint), alias = v.alias, idx = v.idx });
-		end
-		return ob, ret
-	end
-	n = n or (ob and ob.__word_alias) or 1
-	for k, v in ipairs(d) do
-		if v.alias == n then
-			n = k
-			break
-		end
-	end
-	if not d[n] then n = 1  end
-	w = d[n].word
-	hint2 = d[n].hint
-	return ob, w, hint_append(hint, hint2)
-end
-
-local function noun_append(rc, tab, w)
---	w = mrd.lang.norm(w)
-	if tab then
-		table.insert(tab, w)
-	else
-		if rc ~= '' then rc = rc .. '|' end
-		rc = rc .. w
-	end
-	return rc
-end
-
-function mrd:noun_hint(ob, n)
-	if not ob then
-		return ''
-	end
-	if not ob.__hint_cache then
-		std.rawset(ob, '__hint_cache', {
-			list = {},
-			hash = {},
-			len = 16,
-		})
-	end
-	local key = n or ob.__word_alias or 1
-	local c
-	if type(ob.word) == 'string' then -- do not use caching if function
-		c = ob.__hint_cache.hash[key]
-	end
-	if c then
-		return c
-	end
-	local g = ob and ob:gram('noun', n) or {}
-	local hint = ''
-	local lang = self.lang
-	for _, v in ipairs { lang.gram_t.male, lang.gram_t.female,
-		lang.gram_t.neuter, lang.gram_t.plural,
-		lang.gram_t.live } do
-		if g[v] then
-			hint = hint_append(hint, v)
-		end
-	end
-	if not g[self.lang.gram_t.live] then
-		hint = hint_append(hint, lang.gram_t.nonlive)
-	end
-	if ob then
-		hint = hint_append(hint, "noun")
-	end
-	cache_add(ob.__hint_cache, key, hint)
-	return hint
-end
-
-function mrd:noun(w, n, nn)
-	local hint, ob
-	local rc = ''
-	local tab = false
-	ob, w, hint = self:obj(w, n, nn)
-	if type(w) ~= 'table' then
-		local alias = nn
-		if type(alias) ~= 'number' then alias = n end
-		if type(alias) ~= 'number' then alias = nil end
-		w = {{ word = w, hint = hint, alias = alias }}
-	else
-		tab = {}
-	end
-	for _, v in ipairs(w) do
-		local hint2 = self:noun_hint(ob, v.alias)
-		local m = self:word(v.word .. '/'.. hint_append(v.hint, hint2), ob)
-		rc = noun_append(rc, tab, m)
-	end
-	return tab and tab or rc
-end
-
-local function str_hash(str)
-	local sum = 0
-	for i = 1, str:len() do
-		sum = sum + string.byte(str, i)
-	end
-	return sum
-end
-
-function mrd:init(l)
-	self.lang = l
-	if type(l.dict) == 'table' then
-		std.obj.dict(self, l.dict)
-	end
-	if self:gramtab(curdir .. "rgramtab.tab") == false then
-		msg("Error while opening gramtab.")
-		return
-	end
-	local _, crc = self:load(mrd.dict_file)
-	self:create(mrd.dict_file, crc) -- create or update
-end
-
-function mrd:create(fname, crc)
-	local dict = {}
-	if not std.readdir then
-		return
-	end
-	for _, d in ipairs(self.dirs) do
-		if d == '' then d = instead.gamepath() end
-		local list = {}
-		for f in std.readdir(d) do
-			if f:find("%.lua$") or f:find("%.LUA$") then
-				table.insert(list, f)
-			end
-		end
-		table.sort(list)
-		for _, f in ipairs(list) do
-			local path = d .. "/" .. f
-			mrd:file(path, dict)
-		end
-	end
-	local sum = 0
-	for w, _ in pairs(dict) do
-		sum = sum + str_hash(w)
-		sum = sum % 4294967291;
-	end
-	if crc ~= sum then
-		msg("Generating dict.mrd with sum: ", sum)
-		if mrd:load(curdir .. "morphs.mrd", dict) then
-			mrd:dump(fname or 'dict.mrd', sum)
-		else
-			msg("Can not find morph/morphs.mrd")
-		end
-	else
-		msg("Using dict.mrd")
-	end
-end
-if std then
-std.obj.noun = function(self, ...)
-	return mrd:noun(self, ...)
-end
-
-std.obj.Noun = function(self, ...)
-	return mrd.lang.cap(mrd:noun(self, ...))
-end
-
-std.obj.gram = function(self, ...)
-	local hint, w, gram,  _
-	_, w, hint = mrd:obj(self, ...)
-	_, gram = mrd:word(w .. '/'..hint)
-	local thint = ''
-	local t = mrd.lang.gram_t.noun
-	hint = str_split(hint, ",")
-	local g = gram and gram[1] or {}
-	for _, v in ipairs(gram or {}) do
-		if v.t == t or v[t] then
-			g = v
-			break
-		end
-	end
-	local gg = std.clone(g)
-	for _, v in ipairs(hint) do
-		gg[v] = true
-	end
-	for k, v in pairs(gg) do
-		if v then
-			thint = hint_append(thint, k)
-		end
-	end
-	gg.hint = thint
-	return gg
-end
-
-std.obj.dict = function(self, t)
-	local idx = std.rawget(self, '__dict') or {}
-	for word, v in pairs(t) do
-		local w, hints = str_hint(word)
-		if type(v) == 'table' then
-			idx[w] = v
-			v.hints = hints or ""
-		else
-			if not idx[w] then
-				idx[w] = { hints = "", }
-			end
-			table.insert(idx[w], v .. '/' .. hints)
-		end
-	end
-	std.rawset(self, '__dict', idx)
-	return self
-end
-
-local onew = std.obj.new
-std.obj.new = function(self, v)
-	if type(v[1]) == 'string' or type(v[1]) == 'function' then
-		v.word = v[1]
-		table.remove(v, 1)
-	end
-	return onew(self, v)
-end
-end
-local mt = getmetatable("")
-function mt.__unm(v)
-	return v
-end
-
-return mrd
---mrd:gramtab()
---mrd.lang = require "lang-ru"
---mrd:load(false, { [mrd.lang.upper "подосиновики"] = true, [mrd.lang.upper "красные"] = true })
---local w = mrd:word(-"красные подосиновики/рд")
---print(w)
---mrd:file("mrd.lua")
-local type = type
-local kbden = {
-	shifted = {
-	["1"] = "!",
-	["2"] = "@",
-	["3"] = "#",
-	["4"] = "$",
-	["5"] = "%",
-	["6"] = "^",
-	["7"] = "&",
-	["8"] = "*",
-	["9"] = "(",
-	["0"] = ")",
-	["-"] = "_",
-	["="] = "+",
-	["/"] = "?",
-	[","] = "<",
-	["."] = ">",
-	["`"] = "~",
-	["a"] = "A",
-	["b"] = "B",
-	["c"] = "C",
-	["d"] = "D",
-	["e"] = "E",
-	["f"] = "F",
-	["g"] = "G",
-	["h"] = "H",
-	["i"] = "I",
-	["j"] = "J",
-	["k"] = "K",
-	["l"] = "L",
-	["m"] = "M",
-	["n"] = "N",
-	["o"] = "O",
-	["p"] = "P",
-	["q"] = "Q",
-	["r"] = "R",
-	["s"] = "S",
-	["t"] = "T",
-	["u"] = "U",
-	["v"] = "V",
-	["w"] = "W",
-	["x"] = "X",
-	["y"] = "Y",
-	["z"] = "Z",
-	}
-}
-
-local function lower(str)
-	if type(str) ~= 'string' then
-		return str
-	end
-	return str:lower()
-end
-
-local function upper(str)
-	if type(str) ~= 'string' then
-		return str
-	end
-	return str:upper()
-end
-
-local function is_cap(str)
-	if type(str) ~= 'string' then
-		return false
-	end
-	local s, e
-	if str:find("^[A-Z]") then
-		s = true
-	end
-	if str:find("[A-Z]$") then
-		e = true
-	end
-	return s, e
-end
-
-local function cap(str)
-	if type(str) ~= 'string' then
-		return str
-	end
-	str = str:gsub("^.", function(v) return v:upper() end)
-	return str
-end
-
-local lang
-
-local function norm(str)
-	return str
-end
-
-local vowels = {
-	["a"] = true,
-	["e"] = true,
-	["i"] = true,
-	["o"] = true,
-	["u"] = true,
-}
-
-local function is_vowel(l)
-	l = lower(l);
-	return vowels[l]
-end
-
-lang = { yo = false,
-	kbd = kbden,
-	norm = norm,
-	upper = upper,
-	lower = lower,
-	cap = cap,
-	is_cap = is_cap,
-	is_vowel = is_vowel,
-	flex_filter = function() return false end,
-	gram_compat = function() return false end,
-	gram_score = function() return 0 end,
-	gram_t = {
-		noun = '',
-		live = 'live',
-		nonlive = 'nonlive',
-		neuter = 'neutwe',
-		male = 'male',
-		female = 'female',
-		plural = 'plural',
-		proper = 'proper',
-		surname = 'surname',
-		first = 'first',
-		second = 'second',
-		third = 'third',
-	}
-}
-
-return lang
-local type = type
-local kbdru = {
-	["q"] = "й",
-	["w"] = "ц",
-	["e"] = "у",
-	["r"] = "к",
-	["t"] = "е",
-	["y"] = "н",
-	["u"] = "г",
-	["i"] = "ш",
-	["o"] = "щ",
-	["p"] = "з",
-	["["] = "х",
-	["]"] = "ъ",
-	["a"] = "ф",
-	["s"] = "ы",
-	["d"] = "в",
-	["f"] = "а",
-	["g"] = "п",
-	["h"] = "р",
-	["j"] = "о",
-	["k"] = "л",
-	["l"] = "д",
-	[";"] = "ж",
-	["'"] = "э",
-	["z"] = "я",
-	["x"] = "ч",
-	["c"] = "с",
-	["v"] = "м",
-	["b"] = "и",
-	["n"] = "т",
-	["m"] = "ь",
-	[","] = "б",
-	["."] = "ю",
-	["`"] = "ё",
-	["/"] = ".",
-	shifted = {
-	["q"] = "Й",
-	["w"] = "Ц",
-	["e"] = "У",
-	["r"] = "К",
-	["t"] = "Е",
-	["y"] = "Н",
-	["u"] = "Г",
-	["i"] = "Ш",
-	["o"] = "Щ",
-	["p"] = "З",
-	["["] = "Х",
-	["]"] = "Ъ",
-	["a"] = "Ф",
-	["s"] = "Ы",
-	["d"] = "В",
-	["f"] = "А",
-	["g"] = "П",
-	["h"] = "Р",
-	["j"] = "О",
-	["k"] = "Л",
-	["l"] = "Д",
-	[";"] = "Ж",
-	["'"] = "Э",
-	["z"] = "Я",
-	["x"] = "Ч",
-	["c"] = "С",
-	["v"] = "М",
-	["b"] = "И",
-	["n"] = "Т",
-	["m"] = "Ь",
-	[","] = "Б",
-	["."] = "Ю",
-	["`"] = "Ё",
-	["1"] = "!",
-	["2"] = "@",
-	["3"] = "#",
-	["4"] = ";",
-	["5"] = "%",
-	["6"] = ":",
-	["7"] = "?",
-	["8"] = "*",
-	["9"] = "(",
-	["0"] = ")",
-	["-"] = "_",
-	["="] = "+",
-	["/"] = ",",
-	}
-}
-
-local toupper = {
-	["й"] = "Й",
-	["ц"] = "Ц",
-	["у"] = "У",
-	["к"] = "К",
-	["е"] = "Е",
-	["н"] = "Н",
-	["г"] = "Г",
-	["ш"] = "Ш",
-	["щ"] = "Щ",
-	["з"] = "З",
-	["х"] = "Х",
-	["ъ"] = "Ъ",
-	["ф"] = "Ф",
-	["ы"] = "Ы",
-	["в"] = "В",
-	["а"] = "А",
-	["п"] = "П",
-	["р"] = "Р",
-	["о"] = "О",
-	["л"] = "Л",
-	["д"] = "Д",
-	["ж"] = "Ж",
-	["э"] = "Э",
-	["я"] = "Я",
-	["ч"] = "Ч",
-	["с"] = "С",
-	["м"] = "М",
-	["и"] = "И",
-	["т"] = "Т",
-	["ь"] = "Ь",
-	["б"] = "Б",
-	["ю"] = "Ю",
-	["ё"] = "Ё",
-}
-
-local function lower(str)
-	if type(str) ~= 'string' then
-		return str
-	end
-	str = str:lower()
-	for k, v in pairs(toupper) do
-		str = str:gsub(v, k)
-	end
-	return str
-end
-
-local function upper(str)
-	if type(str) ~= 'string' then
-		return str
-	end
-	str = str:upper();
-	for k, v in pairs(toupper) do
-		str = str:gsub(k, v)
-	end
-	return str
-end
-
-local function is_cap(str)
-	if type(str) ~= 'string' then
-		return false
-	end
-	local s, e
-	for _, v in pairs(toupper) do
-		if not s and str:find("^"..v) then
-			s = true
-		end
-		if not e and str:find(v.."$") then
-			e = true
-		end
-		if not s and str:find("^[A-Z]") then
-			s = true
-		end
-		if not e and str:find("[A-Z]$") then
-			e = true
-		end
-	end
-	return s, e
-end
-
-local function cap(str)
-	if type(str) ~= 'string' then
-		return str
-	end
-	if str:find("^[a-z]") then
-		str = str:gsub("^.", function(v) return v:upper() end)
-		return str
-	end
-	for k, v in pairs(toupper) do
-		local s = str:gsub("^"..k, v)
-		if s ~= str then
-			return s
-		end
-	end
-	return str
-end
-
-local lang
-
-local function norm(str)
-	if type(str) ~= 'string' then
-		return str
-	end
-	if not lang.yo then
-		str = str:gsub("ё", "е"):gsub("Ё", "Е")
-	end
-	return str
-end
-
-local vowels = {
-	["у"] = true,
-	["е"] = true,
-	["ы"] = true,
-	["а"] = true,
-	["о"] = true,
-	["и"] = true,
-	["ю"] = true,
-	["ё"] = true,
-	["э"] = true,
-	["я"] = true,
-}
-
-local function is_vowel(l)
-	l = lower(l);
-	return vowels[l]
-end
-
-local gram_tt = {
-	["ИНФИНИТИВ"] = true;
-	["КР_ПРИЛ"] = true;
-	["КР_ПРИЧАСТИЕ"] = true;
-	["Г"] = true;
-}
-
-local function flex_filter(v)
-	local an = v.an
-	if an["им"] then
-		return true
-	end
-	if an["рд"] or an["дт"] or an["тв"] or an["пр"] or an["вн"] then
-		return false
-	end
-	if an["0"] then
-		return true
-	end
-	return gram_tt[an.t]
-end
-
-local function gram_info(a)
-	local t = { }
-	if a['мр'] then
-		t.gen = 'male'
-	elseif a['жр'] then
-		t.gen = 'female'
-	elseif a['ср'] then
-		t.gen = 'neuter'
-	else
-		t.gen = 'any'
-	end
-
-	if a['мн'] then
-		t.num = 'singular'
-	elseif a['ед'] then
-		t.num = 'plural'
-	else
-		t.num = 'any'
-	end
-
-	if a['буд'] then
-		t.time = 'future'
-	elseif a['прш'] then
-		t.time = 'past'
-	elseif a['нст'] then
-		t.time = 'present'
-	else
-		t.time = 'any'
-	end
-
-	if a['1л'] then
-		t.face = 'first'
-	elseif a['2л'] then
-		t.face = 'second'
-	elseif a['3л'] then
-		t.face = 'third'
-	else
-		t.face = 'any'
-	end
-
-	return t
-end
-
-local function __gram_compat(g1, g2, time)
-	if g1.gen ~= g2.gen and g1.gen ~= 'any' and g2.gen ~= 'any' then return false end
-	if not time then
-		if g1.num ~= g2.num and g1.num ~= 'any' and g2.num ~= 'any' then return false end
-	end
-	if g1.time ~= g2.time and g1.time ~= 'any' and g2.time ~= 'any' then return false end
-	if g1.face ~= g2.face and g1.face ~= 'any' and g2.face ~= 'any' then return false end
-	return true
-end
-
-local function gram_eq(a, b)
-	if not a or not b then return true end
-	if a == 'ИНФИНИТИВ' or b == 'ИНФИНИТИВ' then
-		return b == a or b == 'Г' or a == 'Г'
-	end
-	if a == 'КР_ПРИЛ' or b == 'КР_ПРИЛ' then
-		return b == a -- or b == 'П'
-	end
-	if a == 'КР_ПРИЧАСТИЕ' or b == 'КР_ПРИЧАСТИЕ' then
-		return b == a
-	end
-	if a == 'ПРИЧАСТИЕ' or b == 'ПРИЧАСТИЕ' then
-		return b == a
-	end
-	if a == 'Г' or b == 'Г' then return a == b end
-	return true
-end
-
-local function gram_compat(base, aa, bb)
-	if not gram_eq(base.t, aa.t) then
-		return false
-	end
---	local a, b = aa.t, bb.t
-	local g1, g2 = gram_info(aa), gram_info(bb)
-	if bb.noun then
-		if not base['им'] then
-			return false
-		end
-		local g0 = gram_info(base)
-		if not __gram_compat(g0, g1, true) then return false end
-		if not __gram_compat(g0, g2, true) then return false end
-	end
-	return __gram_compat(g1, g2)
-end
-
-local function gram_norm(an)
-	local a = {}
-	local g = {}
-	for _, v in ipairs(an) do
-		a[v] = true
-		table.insert(g, v)
-	end
-	if not a['1л'] and not a['2л'] and not a['3л'] then
-		table.insert(g, '3л')
-	end
-	return g
-end
-
-local function gram_score(an, g)
-	local score = 0
-	g = gram_norm(g)
-	if an["фам"] then score = score - 0.1 end
-	if an["арх"] then score = score - 0.1 end
-	for _, vv in ipairs(g or {}) do
-		if vv:sub(1, 1) == '~' then
-			vv = vv:sub(2)
-			if an[vv] then
-				score = score - 1
-			elseif an.t == vv then
-				score = score - 10
-			end
-		else
-			if an[vv] then
-				score = score + 1
-			elseif an.t == vv then
-				score = score + 10
-			end
-		end
-	end
-	return score
-end
-
-lang = { yo = false,
-	kbd = kbdru,
-	norm = norm,
-	upper = upper,
-	lower = lower,
-	cap = cap,
-	is_cap = is_cap,
-	is_vowel = is_vowel,
-	flex_filter = flex_filter,
-	gram_compat = gram_compat,
-	gram_score = gram_score,
-	gram_t = {
-		noun = 'С',
-		nom = 'им',
-		live = 'од',
-		nonlive = 'но',
-		neuter = 'ср',
-		male = 'мр',
-		female = 'жр',
-		plural = 'мн',
-		proper = 'имя',
-		surname = 'фам',
-		first = '1л',
-		second = '2л',
-		third = '3л',
-	};
-	dict = {
-		["ведро/ср,но,С"] = {
-			"ведро/им", "вёдра/им,мн",
-			"ведро/вн", "вёдра/вн,мн",
-			"ведра/рд", "вёдер/рд,мн",
-			"ведру/дт", "ведрам/дт,мн",
-			"ведром/тв", "вёдрами/тв,мн",
-			"ведре/пр", "вёдрах/пр,мн",
-		},
-		["деревья/ср,но,мн,С"] = {
-			"деревья/им";
-			"деревья/вн";
-			"деревьев/рд";
-			"деревьями/тв";
-			"деревьях/пр";
-			"деревьям/дт";
-		};
-		["дерево/ср,но,С"] = {
-			"дерево/им", "деревья/им,мн";
-			"дерево/вн", "деревья/вн,мн";
-			"дерева/рд", "деревьев/рд,мн";
-			"деревом/тв", "деревьями/тв,мн";
-			"дереве/пр", "деревьях/пр,мн";
-			"дереву/пр", "деревьям/дт,мн";
-		};
-		["огонь/мр,но,С"] = {
-			"огонь/им", "огни/им,мн",
-			"огонь/вн", "огни/вн,мн",
-			"огня/рд", "огней/рд,мн",
-			"огню/дт", "огням/дт,мн",
-			"огнём/тв", "огнями/тв,мн",
-			"огне/пр", "огнях/пр,мн",
-		};
-		["цветы/мн,мр,но,С"] = { -- цветки
-			"цветы/им",
-			"цветы/вн",
-			"цветов/рд",
-			"цветам/дт",
-			"цветами/тв",
-			"цветах/пр",
-		};
-		["хлам/пр,2"] = "хламе";
-		["клевер/пр"] = "клевере";
-		["песок/пр,2"] = "песке";
-	};
-}
-
-return lang
 //  ======  СУЩЕСТВИТЕЛЬНЫЕ   ========
 
 // существительные мужского рода
@@ -7203,6 +5687,2803 @@ return lang
 яю F С мр,жр,ср,ед,им,рд,дт,вн,тв,пр
 яя F С мр,жр,ср,,ед,мн,им,рд,дт,вн,тв,пр
 --luacheck: no self
+
+local curdir = std.getinfo(1).source:gsub("^(.+[\\/])[^\\/]+$", "%1"):gsub("^@", "");
+
+local mrd = {
+	lang = false;
+	words = {};
+	dirs = {''};
+	dict_file = 'dict.mrd';
+}
+
+local msg = dprint or print
+local function debug(...)
+	if DEBUG then
+		dprint(...)
+	end
+end
+local function cache_add(cache, key, val)
+	table.insert(cache.list, 1, key)
+	local len = #cache.list
+	if len > (cache.len or 128) then
+		local okey = cache.list[len]
+		table.remove(cache.list, len)
+		cache.hash[okey] = nil
+	end
+	cache.hash[key] = val
+end
+
+local function split(str, sep)
+	local words = {}
+	if not str then
+		return words
+	end
+	for w in str:gmatch(sep or "[^ \t]+") do
+		table.insert(words, w)
+	end
+	return words
+end
+
+local function empty(l)
+	l = l:gsub("[ \t]+", "")
+	return l == ""
+end
+
+function mrd:gramtab(path)
+	local f, e = io.open(path or 'rgramtab.tab', 'rb')
+	if not f then
+		return false, e
+	end
+	self.gram = {
+		an = {}; -- by ancodes
+		t = {}; -- by types
+	}
+	for l in f:lines() do
+		if not l:find("^[ \t]*//") and not empty(l) then -- not comments
+			local w = split(l)
+			if #w < 3 then
+				msg("Skipping gram: "..l)
+			else
+				local a = split(w[4], '[^,]+')
+				local an = {}
+				for _, v in ipairs(a) do
+					an[v] = true
+				end
+				an.t = w[3] -- type
+				self.gram.an[w[1]] = an;
+				self.gram.t[w[3]] = an;
+			end
+		end
+	end
+	f:close()
+end
+
+local function section(f, fn, ...)
+	local n = f:read("*line")
+	n = n and tonumber(n)
+	if not n then
+		return false
+	end
+	if n == 0 then
+		return true
+	end
+	for l in f:lines() do -- skip accents
+		if fn then fn(l, ...) end
+		n = n - 1
+		if n == 0 then
+			break
+		end
+	end
+	return true
+end
+
+local flex_filter
+
+local function flex_fn(l, flex, an)
+	l = l:gsub("//.*$", "")
+	local fl = {}
+	for w in l:gmatch("[^%%]+") do
+		local ww = split(w, "[^%*]+")
+		if #ww > 3 or #ww < 1 then
+			msg("Skip lex: ", w, l);
+		else
+			local f = { }
+			if #ww == 1 then
+				f.an = ww[1]
+				f.post = ''
+			else
+				f.post = ww[1]
+				f.an = ww[2]
+			end
+			f.pre = ww[3] or ''
+			local a = an[f.an]
+			if not a then
+				msg("Gram not found. Skip lex: "..f.an)
+			else
+				f.an_name = f.an
+				f.an = a
+				if flex_filter(f) then
+					f.filter = true
+				end
+				table.insert(fl, f)
+			end
+		end
+	end
+	table.insert(flex, fl)
+end
+
+local function pref_fn(l, pref)
+	local p = split(l, "[^,]+")
+	table.insert(pref, p)
+end
+
+--[[
+local function dump(vv)
+	local s = ''
+	if type(vv) ~= 'table' then
+		return string.format("%s", tostring(vv))
+	end
+	for k, v in pairs(vv) do
+		s = s .. string.format("%s = %s ", k, v)
+	end
+	return s
+end
+
+local function gram_dump(v)
+	for _, f in ipairs(v.flex) do
+		local tt = v.pref .. f.pre .. v.t .. f.post
+		print("=== ", tt)
+		for _, v in pairs(f.an) do
+			print(_, v)
+		end
+	end
+end
+]]--
+local busy_cnt = 0
+
+local function word_fn(l, self, dict)
+	local norm = mrd.lang.norm
+	local words = self.words
+	local words_list = self.words_list
+	local w = split(l)
+	if #w ~= 6 then
+		msg("Skipping word: "..l)
+		return
+	end
+	if w[1] == '#' then w[1] = '' end
+	local nflex = tonumber(w[2]) or false
+	local an = w[5]
+	if an == '-' then an = false end
+	local an_name = an
+	local npref = tonumber(w[6]) or false
+	if not nflex then
+		msg("Skipping word:"..l)
+		return
+	end
+	nflex = self.flex[nflex + 1]
+	if not nflex then
+		msg("Wrong paradigm number for word: "..l)
+		return
+	end
+	if an then
+		an = self.gram.an[an]
+		if not an then
+			msg("Wrong ancode for word: "..l)
+			return
+		end
+	end
+	if npref then
+		npref = self.pref[npref + 1]
+		if not npref then
+			msg("Wrong prefix for word: "..l)
+			return
+		end
+	end
+	local t = w[1]
+	local num = 0
+	local used = false
+	for _, v in ipairs(nflex) do
+		if v.filter then
+		for _, pref in ipairs(npref or { '' }) do
+			local tt = norm(pref .. v.pre .. t .. v.post)
+--			if tt == 'ЗАКРЕПЛЕН' then
+--				gram_dump { t = t, pref = pref, flex = nflex, an = v.an }
+--			end
+			if not dict or dict[tt] then
+				local a = {}
+				for kk, _ in pairs(an or {}) do
+					a[kk] = an[kk]
+				end
+				for kk, _ in pairs(v.an) do
+					a[kk] = v.an[kk]
+				end
+				local wds = words[tt] or {}
+				table.insert(wds,
+					{ t = t, pref = pref, flex = nflex, an = a })
+				nflex.used = true
+				used = true
+				if npref then
+					npref.used = true
+				end
+				num = num + 1
+				if #wds == 1 then
+					words[tt] = wds
+				end
+			end
+		end
+		end
+	end
+	if used then
+		table.insert(words_list, { t = w[1], flex = nflex, pref = npref, an = an_name })
+	end
+	self.words_nr = self.words_nr + num
+	busy_cnt = busy_cnt + 1
+	if busy_cnt > 1000 then
+		if std then std.busy(true) end
+		busy_cnt = 0
+	end
+	return
+end
+
+function mrd:load(path, dict)
+	local f, e = io.open(path or 'morphs.mrd', 'rb')
+	if not f then
+		return false, e
+	end
+	local flex = {}
+	flex_filter = mrd.lang.flex_filter
+	if not section(f, flex_fn, flex, self.gram.an) then
+		return false, "Error in section 1"
+	end
+	self.flex = flex
+	if not section(f) then
+		return false, "Error in section 2"
+	end
+	if not section(f) then
+		return false, "Error in section 3"
+	end
+	local pref = {}
+	if not section(f, pref_fn, pref) then
+		return false, "Error in section 4"
+	end
+	self.pref = pref
+	self.words_nr = 0
+	self.words = {}
+	self.words_list = {}
+--	collectgarbage("stop")
+	if not section(f, word_fn, self, dict) then
+--		collectgarbage("restart")
+		return false, "Error in section 4"
+	end
+--	collectgarbage("restart")
+	msg("Generated: "..tostring(self.words_nr).." word(s)");
+	local crc = f:read("*line")
+	if crc then crc = tonumber(crc) end
+	f:close()
+	if std then std.busy(false) end
+	return true, crc
+end
+
+function mrd:dump(path, crc)
+	local f, e = io.open(path or 'dict.mrd', 'wb')
+	if not f then
+		return false, e
+	end
+	local n = 0
+	for _, v in ipairs(self.flex) do
+		if v.used then
+			v.norm_no = n
+			n = n + 1
+		end
+	end
+	f:write(string.format("%d\n", n))
+	for _, v in ipairs(self.flex) do
+		if v.used then
+			local s = ''
+			for _, vv in ipairs(v) do
+				s = s .. '%'
+				if vv.post == '' then
+					s = s..vv.an_name
+				else
+					s = s..vv.post..'*'..vv.an_name
+				end
+				if vv.pre ~= '' then
+					s = s .. '*'..vv.pre
+				end
+			end
+			f:write(s.."\n")
+		end
+	end
+	f:write("0\n")
+	f:write("0\n")
+	n = 0
+	for _, v in ipairs(self.pref) do
+		if v.used then
+			v.norm_no = n
+			n = n + 1
+		end
+	end
+	f:write(string.format("%d\n", n))
+	for _, v in ipairs(self.pref) do
+		if v.used then
+			local s = ''
+			for _, vv in ipairs(v) do
+				if s ~= '' then s = s .. ',' end
+				s = s .. vv
+			end
+			f:write(s.."\n")
+		end
+	end
+	f:write(string.format("%d\n", #self.words_list))
+	for _, v in ipairs(self.words_list) do
+		local s
+		if v.t == '' then
+			s = '#'
+		else
+			s = v.t
+		end
+		s = s ..' '..tostring(v.flex.norm_no)
+		s = s..' - -'
+		if v.an then
+			s = s .. ' '..v.an
+		else
+			s = s .. ' -'
+		end
+		if v.pref then
+			s = s ..' '..tostring(v.pref.norm_no)
+		else
+			s = s .. ' -'
+		end
+		f:write(s..'\n')
+	end
+	if crc then
+		f:write(string.format("%d\n", crc))
+	end
+	f:close()
+end
+
+local function gram2an(g)
+	local a = {}
+	for _, v in ipairs(g) do
+		if v:sub(1, 1) == '~' then
+			a[v:sub(2)] = false
+		else
+			a[v] = true
+		end
+	end
+	a.t = nil
+	return a
+end
+
+local lookup_cache = {
+	hash = {};
+	list = {};
+	len = 512;
+}
+
+local function hint_append(hint, h)
+	if h == "" or not h then return hint end
+	if hint == "" or not hint then return h end
+	return hint .. ',' .. h
+end
+
+function mrd:lookup(w, g)
+	local key  = ""
+	for _, v in ipairs(g or {}) do
+		key = hint_append(key, v)
+	end
+	key = w .. '/'..key
+	local cc = lookup_cache.hash[key]
+	if cc then
+		return cc.w, cc.g
+	end
+	w, g = self:__lookup(w, g)
+	cache_add(lookup_cache, key, { w = w, g = g })
+	return w, g
+end
+
+function mrd:__lookup(w, g)
+	local ow = w
+	local cap, upper = self.lang.is_cap(w)
+	local tt = self.lang.upper(self.lang.norm(w))
+	w = self.words[tt]
+	if not w then
+		return false, "No word in dictionary"
+	end
+	local res = {}
+
+	local gram_compat = self.lang.gram_compat
+	local gram_score = self.lang.gram_score
+
+	for _, v in ipairs(w) do
+		local flex = v.flex
+		local score = gram_score(v.an, g)
+		local t = v.an.t
+		for _, f in ipairs(flex) do
+			if gram_compat(v.an, f.an, gram2an(g)) then
+				local sc = gram_score(f.an, g)
+				if sc >= 0 then
+					if t ~= f.an.t then sc = sc - 1 end -- todo
+--[[
+				local tt = v.pref .. f.pre .. v.t .. f.post
+				if tt == 'ЛЕВЫЙ' or tt == 'ЛЕВОГО' or tt == 'ШЛЕМОМ' then
+					print ("======looking for:", g.noun)
+					for _, v in pairs(g) do
+						print(_, v)
+					end
+					print ("======looking got:", score + sc, sc)
+					print(tt, v.t, score + sc)
+					for _, v in pairs(f.an) do
+						print(_, v)
+					end
+				end
+]]--
+					table.insert(res, { score = score + sc, pos = #res, word = v, flex = f })
+				end
+			end
+		end
+	end
+	if #res == 0 then
+		return ow, gram2an(g) -- false, "No gram"
+	end
+	table.sort(res, function(a, b)
+		if a.score == b.score then
+			return a.pos < b.pos
+		end
+		return a.score > b.score
+	end)
+
+--[[
+	for i = 1, #res do
+		local w = res[i]
+		local tt = self.lang.lower(w.word.pref .. w.flex.pre .. w.word.t .. w.flex.post)
+		print(i, "res: ", tt, w.score)
+		if tt == 'красный' or tt == 'красного' then
+			for _, v in pairs(w.flex.an) do
+				print(_, v)
+			end
+		end
+--		print(tt, w.score)
+	end
+]]--
+	w = res[1]
+	local gram = {}
+	for k, v in pairs(w.flex.an) do
+		gram[k] = v
+	end
+
+	for k, v in pairs(w.word.an) do
+		gram[k] = v
+	end
+
+	w = self.lang.lower(w.word.pref .. w.flex.pre .. w.word.t .. w.flex.post)
+	if upper then
+		w = self.lang.upper(w)
+	elseif cap then
+		w = self.lang.cap(w)
+	end
+
+	return w, gram
+end
+local word_match = "[^ \t,%-!/:%+&]+"
+local missed_words = {}
+
+local word_cache = { list = {}, hash = {} }
+
+function mrd:word(w, ob)
+	local cache = word_cache
+	if ob then
+		if not ob.__word_cache then
+			std.rawset(ob, '__word_cache', {
+					list = {},
+					hash = {},
+					len = 32,
+				})
+		end
+		cache = ob.__word_cache
+	end
+	local key = w
+	local c = cache.hash[key]
+	if c then
+		return std.clone(c[1]), std.clone(c[2])
+	end
+	local ow = w
+	local s, _ = w:find("/[^/]*$")
+	local g = {}
+	local grams = {}
+	local hints = ''
+	if s then
+		hints = w:sub(s + 1)
+		w = w:sub(1, s - 1)
+		g = split(hints, "[^, ]+")
+	end
+	local found = true
+	local noun = false
+	local lang = self.lang
+	w = w:gsub(word_match,
+		function(t)
+			if noun then return t end
+			local ww, gg
+			if ob then
+				ww, gg = self:dict(ob.__dict, t..'/'..hints)
+			end
+			if not ww then
+				ww, gg = self:dict(game.__dict, t..'/'..hints)
+			end
+			if not ww then
+				ww, gg = self:dict(self.__dict, t..'/'..hints)
+			end
+			noun = gg and gg[lang.gram_t.noun]
+			if not ww then
+				ww, gg = self:lookup(t, g)
+				noun = gg and gg.t == lang.gram_t.noun
+			end
+			if gg and (gg[lang.gram_t.proper] or gg[lang.gram_t.surname]) then
+				noun = false
+			end
+			if not ww then
+				found = false
+			else
+				table.insert(grams, gg)
+			end
+			return ww or t
+		end)
+	if not found then
+		if DEBUG and not tonumber(w) and not missed_words[w] then
+			missed_words[w] = true
+			debug("Can not find word: '"..ow.."'")
+		end
+	end
+	cache_add(cache, key, { w, grams })
+	return w, grams
+end
+
+function mrd:file(f, dict)
+	dict = dict or {}
+	local ff, e = io.open(f, "rb")
+	if not ff then
+		return false, e
+	end
+	debug("Added file: ", f)
+	for l in ff:lines() do
+		for w in l:gmatch('%-"[^"]+"') do
+			w = w:gsub('^%-"', ""):gsub('"$', "")
+			local words = split(w, '[^|]+')
+			for _, word in ipairs(words) do
+				word = word:gsub("/[^/]*$", "")
+				for ww in word:gmatch(word_match) do
+					local t = self.lang.upper(self.lang.norm(ww))
+					if not dict[t] and not t:find("%*$") then
+						dict[t] = true;
+						debug("mrd: Added word: ", ww)
+					end
+				end
+			end
+		end
+	end
+	ff:close()
+	return dict
+end
+
+local function str_hint(str)
+--	str = str:gsub("^%+", "")
+	local s, _ = str:find("/[^/]*$")
+	if not s then
+		return str, ""
+	end
+	if s == 1 then
+		return "", str:sub(2)
+	end
+	return str:sub(1, s - 1), str:sub(s + 1)
+end
+
+local function str_strip(str)
+	return std.strip(str)
+end
+
+local function str_split(str, delim)
+	local a = std.split(str, delim)
+	for k, _ in ipairs(a) do
+		a[k] = str_strip(a[k])
+	end
+	return a
+end
+
+function mrd:dict(dict, word)
+	if not dict then return end
+	local tab = {}
+	local wrd, hints = str_hint(word)
+	hints = str_split(hints, ",")
+	local tt = dict[wrd]
+
+	if not tt then
+		return
+	end
+
+	for _, v in ipairs(tt) do
+		local whints = {}
+		local w, h = str_hint(v)
+		local hh = str_split(h, ",")
+		for _, vv in ipairs(hh) do
+			whints[vv] = true
+		end
+		local t = { w, score = 0, pos = #tab, w = w }
+		for _, hv in ipairs(hints) do
+			if hv:sub(1, 1) ~= '~' then
+				if whints[hv] then
+					t.score = t.score + 1
+				end
+			else
+				if whints[str_strip(hv:sub(2))] then
+					t.score = t.score - 1
+				end
+			end
+		end
+		t.hints = str_split(hint_append(tt.hints, h), ",")
+		if mrd.lang.gram_t.nom and whints[mrd.lang.gram_t.nom] then
+			t.score = t.score + 0.5
+		end
+		table.insert(tab, t)
+	end
+	if #tab == 0 then
+		return
+	end
+	table.sort(tab,
+		function(a, b)
+			if a.score == b.score then
+				return a.pos < b.pos
+			end
+			return a.score > b.score
+		end)
+	if tab[1].score > 0 then
+		return tab[1].w, gram2an(tab[1].hints)
+	end
+end
+
+function mrd.dispof(w)
+	if w.raw_word ~= nil then
+		local d = std.call(w, 'raw_word')
+		return d, true
+	end
+	if w.word ~= nil then
+		local d = std.call(w, 'word')
+		return d
+	end
+	return std.titleof(w) or std.nameof(w)
+end
+
+local obj_cache = { hash = {}, list = {}, len = 128 }
+
+function mrd:obj(w, n, nn)
+	local hint = ''
+	local hint2, disp, ob, raw
+	if type(w) == 'string' then
+		w, hint = str_hint(w)
+	elseif type(n) == 'string' then
+		hint = n
+		n = nn
+	end
+	if type(w) ~= 'string' then
+--		w = std.object(w)
+		ob = w
+		disp, raw = self.dispof(w)
+	else
+		disp = w
+	end
+	local d = obj_cache.hash[disp]
+	if not d then
+		d = str_split(disp, '|')
+		if #d == 0 then
+			std.err("Wrong object display: ".. (disp or 'nil'), 2)
+		end
+	-- normalize
+		local nd = {}
+		for k, v in ipairs(d) do
+			w, hint2 = str_hint(v)
+			local dd = raw and { w } or str_split(w, ',')
+			for _, vv in ipairs(dd) do
+				table.insert(nd, { word = vv, hint = hint2 or '', alias = k, idx = _ })
+--				for w in vv:gmatch("[^ ]+") do
+--					table.insert(nd, { word = w, hint = hint2 or '', alias = k, idx = _ })
+--				end
+			end
+		end
+		d = nd
+		cache_add(obj_cache, disp, d)
+	end
+	if type(n) == 'table' then
+		local ret = n
+		for _, v in ipairs(d) do
+			table.insert(ret, { word = v.word, hint = hint_append(hint, v.hint), alias = v.alias, idx = v.idx });
+		end
+		return ob, ret
+	end
+	n = n or (ob and ob.__word_alias) or 1
+	for k, v in ipairs(d) do
+		if v.alias == n then
+			n = k
+			break
+		end
+	end
+	if not d[n] then n = 1  end
+	w = d[n].word
+	hint2 = d[n].hint
+	return ob, w, hint_append(hint, hint2)
+end
+
+local function noun_append(rc, tab, w)
+--	w = mrd.lang.norm(w)
+	if tab then
+		table.insert(tab, w)
+	else
+		if rc ~= '' then rc = rc .. '|' end
+		rc = rc .. w
+	end
+	return rc
+end
+
+function mrd:noun_hint(ob, n)
+	if not ob then
+		return ''
+	end
+	if not ob.__hint_cache then
+		std.rawset(ob, '__hint_cache', {
+			list = {},
+			hash = {},
+			len = 16,
+		})
+	end
+	local key = n or ob.__word_alias or 1
+	local c
+	if type(ob.word) == 'string' then -- do not use caching if function
+		c = ob.__hint_cache.hash[key]
+	end
+	if c then
+		return c
+	end
+	local g = ob and ob:gram('noun', n) or {}
+	local hint = ''
+	local lang = self.lang
+	for _, v in ipairs { lang.gram_t.male, lang.gram_t.female,
+		lang.gram_t.neuter, lang.gram_t.plural,
+		lang.gram_t.live } do
+		if g[v] then
+			hint = hint_append(hint, v)
+		end
+	end
+	if not g[self.lang.gram_t.live] then
+		hint = hint_append(hint, lang.gram_t.nonlive)
+	end
+	if ob then
+		hint = hint_append(hint, "noun")
+	end
+	cache_add(ob.__hint_cache, key, hint)
+	return hint
+end
+
+function mrd:noun(w, n, nn)
+	local hint, ob
+	local rc = ''
+	local tab = false
+	ob, w, hint = self:obj(w, n, nn)
+	if type(w) ~= 'table' then
+		local alias = nn
+		if type(alias) ~= 'number' then alias = n end
+		if type(alias) ~= 'number' then alias = nil end
+		w = {{ word = w, hint = hint, alias = alias }}
+	else
+		tab = {}
+	end
+	for _, v in ipairs(w) do
+		local hint2 = self:noun_hint(ob, v.alias)
+		local m = self:word(v.word .. '/'.. hint_append(v.hint, hint2), ob)
+		rc = noun_append(rc, tab, m)
+	end
+	return tab and tab or rc
+end
+
+local function str_hash(str)
+	local sum = 0
+	for i = 1, str:len() do
+		sum = sum + string.byte(str, i)
+	end
+	return sum
+end
+
+function mrd:init(l)
+	self.lang = l
+	if type(l.dict) == 'table' then
+		std.obj.dict(self, l.dict)
+	end
+	if self:gramtab(curdir .. "rgramtab.tab") == false then
+		msg("Error while opening gramtab.")
+		return
+	end
+	local _, crc = self:load(mrd.dict_file)
+	self:create(mrd.dict_file, crc) -- create or update
+end
+
+function mrd:create(fname, crc)
+	local dict = {}
+	if not std.readdir then
+		return
+	end
+	for _, d in ipairs(self.dirs) do
+		if d == '' then d = instead.gamepath() end
+		local list = {}
+		for f in std.readdir(d) do
+			if f:find("%.lua$") or f:find("%.LUA$") then
+				table.insert(list, f)
+			end
+		end
+		table.sort(list)
+		for _, f in ipairs(list) do
+			local path = d .. "/" .. f
+			mrd:file(path, dict)
+		end
+	end
+	local sum = 0
+	for w, _ in pairs(dict) do
+		sum = sum + str_hash(w)
+		sum = sum % 4294967291;
+	end
+	if crc ~= sum then
+		msg("Generating dict.mrd with sum: ", sum)
+		if mrd:load(curdir .. "morphs.mrd", dict) then
+			mrd:dump(fname or 'dict.mrd', sum)
+		else
+			msg("Can not find morph/morphs.mrd")
+		end
+	else
+		msg("Using dict.mrd")
+	end
+end
+if std then
+std.obj.noun = function(self, ...)
+	return mrd:noun(self, ...)
+end
+
+std.obj.Noun = function(self, ...)
+	return mrd.lang.cap(mrd:noun(self, ...))
+end
+
+std.obj.gram = function(self, ...)
+	local hint, w, gram,  _
+	_, w, hint = mrd:obj(self, ...)
+	_, gram = mrd:word(w .. '/'..hint)
+	local thint = ''
+	local t = mrd.lang.gram_t.noun
+	hint = str_split(hint, ",")
+	local g = gram and gram[1] or {}
+	for _, v in ipairs(gram or {}) do
+		if v.t == t or v[t] then
+			g = v
+			break
+		end
+	end
+	local gg = std.clone(g)
+	for _, v in ipairs(hint) do
+		gg[v] = true
+	end
+	for k, v in pairs(gg) do
+		if v then
+			thint = hint_append(thint, k)
+		end
+	end
+	gg.hint = thint
+	return gg
+end
+
+std.obj.dict = function(self, t)
+	local idx = std.rawget(self, '__dict') or {}
+	for word, v in pairs(t) do
+		local w, hints = str_hint(word)
+		if type(v) == 'table' then
+			idx[w] = v
+			v.hints = hints or ""
+		else
+			if not idx[w] then
+				idx[w] = { hints = "", }
+			end
+			table.insert(idx[w], v .. '/' .. hints)
+		end
+	end
+	std.rawset(self, '__dict', idx)
+	return self
+end
+
+local onew = std.obj.new
+std.obj.new = function(self, v)
+	if type(v[1]) == 'string' or type(v[1]) == 'function' then
+		v.word = v[1]
+		table.remove(v, 1)
+	end
+	return onew(self, v)
+end
+end
+local mt = getmetatable("")
+function mt.__unm(v)
+	return v
+end
+
+return mrd
+--mrd:gramtab()
+--mrd.lang = require "lang-ru"
+--mrd:load(false, { [mrd.lang.upper "подосиновики"] = true, [mrd.lang.upper "красные"] = true })
+--local w = mrd:word(-"красные подосиновики/рд")
+--print(w)
+--mrd:file("mrd.lua")
+local type = type
+local kbden = {
+	shifted = {
+	["1"] = "!",
+	["2"] = "@",
+	["3"] = "#",
+	["4"] = "$",
+	["5"] = "%",
+	["6"] = "^",
+	["7"] = "&",
+	["8"] = "*",
+	["9"] = "(",
+	["0"] = ")",
+	["-"] = "_",
+	["="] = "+",
+	["/"] = "?",
+	[","] = "<",
+	["."] = ">",
+	["`"] = "~",
+	["a"] = "A",
+	["b"] = "B",
+	["c"] = "C",
+	["d"] = "D",
+	["e"] = "E",
+	["f"] = "F",
+	["g"] = "G",
+	["h"] = "H",
+	["i"] = "I",
+	["j"] = "J",
+	["k"] = "K",
+	["l"] = "L",
+	["m"] = "M",
+	["n"] = "N",
+	["o"] = "O",
+	["p"] = "P",
+	["q"] = "Q",
+	["r"] = "R",
+	["s"] = "S",
+	["t"] = "T",
+	["u"] = "U",
+	["v"] = "V",
+	["w"] = "W",
+	["x"] = "X",
+	["y"] = "Y",
+	["z"] = "Z",
+	}
+}
+
+local function lower(str)
+	if type(str) ~= 'string' then
+		return str
+	end
+	return str:lower()
+end
+
+local function upper(str)
+	if type(str) ~= 'string' then
+		return str
+	end
+	return str:upper()
+end
+
+local function is_cap(str)
+	if type(str) ~= 'string' then
+		return false
+	end
+	local s, e
+	if str:find("^[A-Z]") then
+		s = true
+	end
+	if str:find("[A-Z]$") then
+		e = true
+	end
+	return s, e
+end
+
+local function cap(str)
+	if type(str) ~= 'string' then
+		return str
+	end
+	str = str:gsub("^.", function(v) return v:upper() end)
+	return str
+end
+
+local lang
+
+local function norm(str)
+	return str
+end
+
+local vowels = {
+	["a"] = true,
+	["e"] = true,
+	["i"] = true,
+	["o"] = true,
+	["u"] = true,
+}
+
+local function is_vowel(l)
+	l = lower(l);
+	return vowels[l]
+end
+
+lang = { yo = false,
+	kbd = kbden,
+	norm = norm,
+	upper = upper,
+	lower = lower,
+	cap = cap,
+	is_cap = is_cap,
+	is_vowel = is_vowel,
+	flex_filter = function() return false end,
+	gram_compat = function() return false end,
+	gram_score = function() return 0 end,
+	gram_t = {
+		noun = '',
+		live = 'live',
+		nonlive = 'nonlive',
+		neuter = 'neutwe',
+		male = 'male',
+		female = 'female',
+		plural = 'plural',
+		proper = 'proper',
+		surname = 'surname',
+		first = 'first',
+		second = 'second',
+		third = 'third',
+	}
+}
+
+return lang
+local type = type
+local kbdru = {
+	["q"] = "й",
+	["w"] = "ц",
+	["e"] = "у",
+	["r"] = "к",
+	["t"] = "е",
+	["y"] = "н",
+	["u"] = "г",
+	["i"] = "ш",
+	["o"] = "щ",
+	["p"] = "з",
+	["["] = "х",
+	["]"] = "ъ",
+	["a"] = "ф",
+	["s"] = "ы",
+	["d"] = "в",
+	["f"] = "а",
+	["g"] = "п",
+	["h"] = "р",
+	["j"] = "о",
+	["k"] = "л",
+	["l"] = "д",
+	[";"] = "ж",
+	["'"] = "э",
+	["z"] = "я",
+	["x"] = "ч",
+	["c"] = "с",
+	["v"] = "м",
+	["b"] = "и",
+	["n"] = "т",
+	["m"] = "ь",
+	[","] = "б",
+	["."] = "ю",
+	["`"] = "ё",
+	["/"] = ".",
+	shifted = {
+	["q"] = "Й",
+	["w"] = "Ц",
+	["e"] = "У",
+	["r"] = "К",
+	["t"] = "Е",
+	["y"] = "Н",
+	["u"] = "Г",
+	["i"] = "Ш",
+	["o"] = "Щ",
+	["p"] = "З",
+	["["] = "Х",
+	["]"] = "Ъ",
+	["a"] = "Ф",
+	["s"] = "Ы",
+	["d"] = "В",
+	["f"] = "А",
+	["g"] = "П",
+	["h"] = "Р",
+	["j"] = "О",
+	["k"] = "Л",
+	["l"] = "Д",
+	[";"] = "Ж",
+	["'"] = "Э",
+	["z"] = "Я",
+	["x"] = "Ч",
+	["c"] = "С",
+	["v"] = "М",
+	["b"] = "И",
+	["n"] = "Т",
+	["m"] = "Ь",
+	[","] = "Б",
+	["."] = "Ю",
+	["`"] = "Ё",
+	["1"] = "!",
+	["2"] = "@",
+	["3"] = "#",
+	["4"] = ";",
+	["5"] = "%",
+	["6"] = ":",
+	["7"] = "?",
+	["8"] = "*",
+	["9"] = "(",
+	["0"] = ")",
+	["-"] = "_",
+	["="] = "+",
+	["/"] = ",",
+	}
+}
+
+local toupper = {
+	["й"] = "Й",
+	["ц"] = "Ц",
+	["у"] = "У",
+	["к"] = "К",
+	["е"] = "Е",
+	["н"] = "Н",
+	["г"] = "Г",
+	["ш"] = "Ш",
+	["щ"] = "Щ",
+	["з"] = "З",
+	["х"] = "Х",
+	["ъ"] = "Ъ",
+	["ф"] = "Ф",
+	["ы"] = "Ы",
+	["в"] = "В",
+	["а"] = "А",
+	["п"] = "П",
+	["р"] = "Р",
+	["о"] = "О",
+	["л"] = "Л",
+	["д"] = "Д",
+	["ж"] = "Ж",
+	["э"] = "Э",
+	["я"] = "Я",
+	["ч"] = "Ч",
+	["с"] = "С",
+	["м"] = "М",
+	["и"] = "И",
+	["т"] = "Т",
+	["ь"] = "Ь",
+	["б"] = "Б",
+	["ю"] = "Ю",
+	["ё"] = "Ё",
+}
+
+local function lower(str)
+	if type(str) ~= 'string' then
+		return str
+	end
+	str = str:lower()
+	for k, v in pairs(toupper) do
+		str = str:gsub(v, k)
+	end
+	return str
+end
+
+local function upper(str)
+	if type(str) ~= 'string' then
+		return str
+	end
+	str = str:upper();
+	for k, v in pairs(toupper) do
+		str = str:gsub(k, v)
+	end
+	return str
+end
+
+local function is_cap(str)
+	if type(str) ~= 'string' then
+		return false
+	end
+	local s, e
+	for _, v in pairs(toupper) do
+		if not s and str:find("^"..v) then
+			s = true
+		end
+		if not e and str:find(v.."$") then
+			e = true
+		end
+		if not s and str:find("^[A-Z]") then
+			s = true
+		end
+		if not e and str:find("[A-Z]$") then
+			e = true
+		end
+	end
+	return s, e
+end
+
+local function cap(str)
+	if type(str) ~= 'string' then
+		return str
+	end
+	if str:find("^[a-z]") then
+		str = str:gsub("^.", function(v) return v:upper() end)
+		return str
+	end
+	for k, v in pairs(toupper) do
+		local s = str:gsub("^"..k, v)
+		if s ~= str then
+			return s
+		end
+	end
+	return str
+end
+
+local lang
+
+local function norm(str)
+	if type(str) ~= 'string' then
+		return str
+	end
+	if not lang.yo then
+		str = str:gsub("ё", "е"):gsub("Ё", "Е")
+	end
+	return str
+end
+
+local vowels = {
+	["у"] = true,
+	["е"] = true,
+	["ы"] = true,
+	["а"] = true,
+	["о"] = true,
+	["и"] = true,
+	["ю"] = true,
+	["ё"] = true,
+	["э"] = true,
+	["я"] = true,
+}
+
+local function is_vowel(l)
+	l = lower(l);
+	return vowels[l]
+end
+
+local gram_tt = {
+	["ИНФИНИТИВ"] = true;
+	["КР_ПРИЛ"] = true;
+	["КР_ПРИЧАСТИЕ"] = true;
+	["Г"] = true;
+}
+
+local function flex_filter(v)
+	local an = v.an
+	if an["им"] then
+		return true
+	end
+	if an["рд"] or an["дт"] or an["тв"] or an["пр"] or an["вн"] then
+		return false
+	end
+	if an["0"] then
+		return true
+	end
+	return gram_tt[an.t]
+end
+
+local function gram_info(a)
+	local t = { }
+	if a['мр'] then
+		t.gen = 'male'
+	elseif a['жр'] then
+		t.gen = 'female'
+	elseif a['ср'] then
+		t.gen = 'neuter'
+	else
+		t.gen = 'any'
+	end
+
+	if a['мн'] then
+		t.num = 'singular'
+	elseif a['ед'] then
+		t.num = 'plural'
+	else
+		t.num = 'any'
+	end
+
+	if a['буд'] then
+		t.time = 'future'
+	elseif a['прш'] then
+		t.time = 'past'
+	elseif a['нст'] then
+		t.time = 'present'
+	else
+		t.time = 'any'
+	end
+
+	if a['1л'] then
+		t.face = 'first'
+	elseif a['2л'] then
+		t.face = 'second'
+	elseif a['3л'] then
+		t.face = 'third'
+	else
+		t.face = 'any'
+	end
+
+	return t
+end
+
+local function __gram_compat(g1, g2, time)
+	if g1.gen ~= g2.gen and g1.gen ~= 'any' and g2.gen ~= 'any' then return false end
+	if not time then
+		if g1.num ~= g2.num and g1.num ~= 'any' and g2.num ~= 'any' then return false end
+	end
+	if g1.time ~= g2.time and g1.time ~= 'any' and g2.time ~= 'any' then return false end
+	if g1.face ~= g2.face and g1.face ~= 'any' and g2.face ~= 'any' then return false end
+	return true
+end
+
+local function gram_eq(a, b)
+	if not a or not b then return true end
+	if a == 'ИНФИНИТИВ' or b == 'ИНФИНИТИВ' then
+		return b == a or b == 'Г' or a == 'Г'
+	end
+	if a == 'КР_ПРИЛ' or b == 'КР_ПРИЛ' then
+		return b == a -- or b == 'П'
+	end
+	if a == 'КР_ПРИЧАСТИЕ' or b == 'КР_ПРИЧАСТИЕ' then
+		return b == a
+	end
+	if a == 'ПРИЧАСТИЕ' or b == 'ПРИЧАСТИЕ' then
+		return b == a
+	end
+	if a == 'Г' or b == 'Г' then return a == b end
+	return true
+end
+
+local function gram_compat(base, aa, bb)
+	if not gram_eq(base.t, aa.t) then
+		return false
+	end
+--	local a, b = aa.t, bb.t
+	local g1, g2 = gram_info(aa), gram_info(bb)
+	if bb.noun then
+		if not base['им'] then
+			return false
+		end
+		local g0 = gram_info(base)
+		if not __gram_compat(g0, g1, true) then return false end
+		if not __gram_compat(g0, g2, true) then return false end
+	end
+	return __gram_compat(g1, g2)
+end
+
+local function gram_norm(an)
+	local a = {}
+	local g = {}
+	for _, v in ipairs(an) do
+		a[v] = true
+		table.insert(g, v)
+	end
+	if not a['1л'] and not a['2л'] and not a['3л'] then
+		table.insert(g, '3л')
+	end
+	return g
+end
+
+local function gram_score(an, g)
+	local score = 0
+	g = gram_norm(g)
+	if an["фам"] then score = score - 0.1 end
+	if an["арх"] then score = score - 0.1 end
+	if not g["од"] and not g["но"] and an["од"] and not an["но"] then score = score - 0.1 end
+	for _, vv in ipairs(g or {}) do
+		if vv:sub(1, 1) == '~' then
+			vv = vv:sub(2)
+			if an[vv] then
+				score = score - 1
+			elseif an.t == vv then
+				score = score - 10
+			end
+		else
+			if an[vv] then
+				score = score + 1
+			elseif an.t == vv then
+				score = score + 10
+			end
+		end
+	end
+	return score
+end
+
+lang = { yo = false,
+	kbd = kbdru,
+	norm = norm,
+	upper = upper,
+	lower = lower,
+	cap = cap,
+	is_cap = is_cap,
+	is_vowel = is_vowel,
+	flex_filter = flex_filter,
+	gram_compat = gram_compat,
+	gram_score = gram_score,
+	gram_t = {
+		noun = 'С',
+		nom = 'им',
+		live = 'од',
+		nonlive = 'но',
+		neuter = 'ср',
+		male = 'мр',
+		female = 'жр',
+		plural = 'мн',
+		proper = 'имя',
+		surname = 'фам',
+		first = '1л',
+		second = '2л',
+		third = '3л',
+	};
+	dict = {
+		["ведро/ср,но,С"] = {
+			"ведро/им", "вёдра/им,мн",
+			"ведро/вн", "вёдра/вн,мн",
+			"ведра/рд", "вёдер/рд,мн",
+			"ведру/дт", "ведрам/дт,мн",
+			"ведром/тв", "вёдрами/тв,мн",
+			"ведре/пр", "вёдрах/пр,мн",
+		},
+		["деревья/ср,но,мн,С"] = {
+			"деревья/им";
+			"деревья/вн";
+			"деревьев/рд";
+			"деревьями/тв";
+			"деревьях/пр";
+			"деревьям/дт";
+		};
+		["листья/мр,но,мн,С"] = {
+			"листья/им";
+			"листья/вн";
+			"листьев/рд";
+			"листьями/тв";
+			"листьях/пр";
+			"листьям/дт";
+		};
+		["дерево/ср,но,С"] = {
+			"дерево/им", "деревья/им,мн";
+			"дерево/вн", "деревья/вн,мн";
+			"дерева/рд", "деревьев/рд,мн";
+			"деревом/тв", "деревьями/тв,мн";
+			"дереве/пр", "деревьях/пр,мн";
+			"дереву/пр", "деревьям/дт,мн";
+		};
+		["огонь/мр,но,С"] = {
+			"огонь/им", "огни/им,мн",
+			"огонь/вн", "огни/вн,мн",
+			"огня/рд", "огней/рд,мн",
+			"огню/дт", "огням/дт,мн",
+			"огнём/тв", "огнями/тв,мн",
+			"огне/пр", "огнях/пр,мн",
+		};
+		["цветы/мн,мр,но,С"] = { -- цветки
+			"цветы/им",
+			"цветы/вн",
+			"цветов/рд",
+			"цветам/дт",
+			"цветами/тв",
+			"цветах/пр",
+		};
+		["хлам/пр,2"] = "хламе";
+		["клевер/пр"] = "клевере";
+		["песок/пр,2"] = "песке";
+	};
+}
+
+return lang
+This code uses dictionary files from the http://aot.ru project that is
+covered by the terms of the LGPL license.
+
+Dictionary files:
+https://sourceforge.net/p/seman/svn/HEAD/tree/trunk/Dicts/Morph/Russian/
+
+License:
+https://sourceforge.net/p/seman/svn/HEAD/tree/trunk/copying
+local std = stead
+local instead = std.ref '@instead'
+-- luacheck: read globals instead_savepath
+-- luacheck: read globals instead_gamepath
+-- luacheck: read globals instead_exepath
+-- luacheck: globals io
+instead.savepath = instead_savepath
+std.savepath = instead_savepath
+instead.gamepath = instead_gamepath
+instead.exepath = instead_exepath
+
+io.open = stead.hook(io.open, function(f, path, acc, ...)
+	if std.type(path) == 'string' and path:sub(1, 1) ~= '/' and not
+		(path:sub(2, 2) == ':' and path:find("^[A-Z]", 1) == 1) then
+		path = instead.gamepath()..'/'..path
+	end
+	return f(path, acc, ...)
+end)
+--luacheck: no self
+local lang = require "morph/lang-ru"
+require "parser/mp"
+require "parser/mplib"
+local mp = _'@metaparser'
+
+std.mod_init(
+	function()
+	mp:init(lang)
+end)
+game.dsc = function()
+	p ([[МЕТАПАРСЕР3 Версия: ]]..mp.version.."^")
+	p [[http://instead-hub.github.io^^
+Если вам необходима справка по игре, наберите "помощь".
+^]]
+end
+-- local utf = mp.utf
+
+_'@all'.word = -"всё/~од"
+
+_'@darkness'.word = -"тьма,темнота,темень"
+_'@darkness'.before_Any = "Полная, кромешная тьма."
+_'@darkness':attr 'persist'
+
+_'@n_to'.word = -"север";
+_'@ne_to'.word = -"северо-восток";
+_'@e_to'.word = -"восток";
+_'@se_to'.word = -"юго-восток";
+_'@s_to'.word = -"юг";
+_'@sw_to'.word = -"юго-запад";
+_'@w_to'.word = -"запад";
+_'@nw_to'.word = -"северо-запад";
+_'@u_to'.word = -"наверх,вверх,верх";
+_'@d_to'.word = -"вниз,низ";
+_'@out_to'.word = -"наружу,выход,назад";
+_'@in_to'.word = -"внутрь,вход"
+
+mp.shorten = {
+	["с"] = "север";
+	["в"] = "восток";
+	["з"] = "запад";
+	["ю"] = "юг";
+	["св"] = "северо-восток";
+	["юв"] = "юго-восток";
+	["юз"] = "юго-запад";
+	["сз"] = "северо-запад";
+	["вн"] = "вниз";
+	["вв"] = "вверх";
+}
+
+mp.shorten_expert = {
+	["и"] = "инвентарь";
+	["ж"] = "ждать";
+	["о"] = "осмотреть";
+	["осм"] = "осмотреть";
+	["вкл"] = "включить";
+	["выкл"] = "выключить";
+	["см"] = "смотреть";
+}
+
+function mp:skip_filter(w)
+	for _, v in ipairs(w) do
+		if v == 'не' or v == 'кроме' or v == 'вместо' then
+			return false
+		end
+	end
+	return true
+end
+
+_'@compass'.before_Default = function()
+	p('"{#First}" это направление. {#Firstit/вн} нельзя ', mp.parsed[1], ".")
+end
+
+function mp.msg.SCORE(d)
+	if d > 0 then
+		pn ("{$fmt em|(Счёт увеличился на ", d, ")}")
+	else
+		pn ("{$fmt em|(Счёт уменьшился на ", d, ")}")
+	end
+end
+mp.door.word = -"дверь";
+mp.msg.TITLE_SCORE = function()
+	if mp.maxscore then
+		pr ("Счёт: ", mp.score, "/", mp.maxscore)
+	else
+		pr ("Счёт: ", mp.score)
+	end
+end
+mp.msg.TITLE_TURNS = function()
+	pr ("Ходы: ", game:time() - 1)
+end
+mp.msg.YES = "Да"
+mp.msg.WHEN_DARK = "Кромешная тьма."
+mp.msg.UNKNOWN_THEDARK = "Возможно, это потому что в темноте ничего не видно?"
+mp.msg.COMPASS_NOWAY = "Этот путь недоступен."
+mp.msg.COMPASS_EXAM_NO = "В этом направлении не видно ничего примечательного."
+mp.msg.ENUM = "шт."
+mp.msg.CUTSCENE_HELP = "Для продолжения нажмите <ввод> или введите {$fmt em|дальше}."
+mp.msg.DLG_HELP = "Для выбора фразы введите цифру."
+mp.msg.NO_ALL = "Это действие нельзя применить на всё."
+mp.msg.DROPPING_ALL = function(w)
+	pn (iface:em("(бросить "..w:noun'вн'..")"))
+end
+mp.msg.TAKING_ALL = function(w)
+	pn (iface:em("(взять "..w:noun'вн'..")"))
+end
+mp.msg.TAKE_BEFORE = function(w)
+	pn (iface:em("(сначала взяв "..w:noun'вн'..")"))
+end
+mp.msg.DISROBE_BEFORE = function(w)
+	pn (iface:em("(сначала сняв "..w:noun'вн'..")"))
+end
+
+mp.msg.CLOSE_BEFORE = function(w)
+	pn (iface:em("(сначала закрыв "..w:noun'вн'..")"))
+end
+
+--"находиться"
+mp.msg.SCENE = "{#Me} {#word/находиться,#me,нст} {#if_has/#here,supporter,на,в} {#here/пр,2}.";
+mp.msg.INSIDE_SCENE = "{#Me} {#word/находиться,#me,нст} {#if_has/#where,supporter,на,в} {#where/пр,2}.";
+mp.msg.TITLE_INSIDE = "{#if_has/#where,supporter,на,в} {#where/пр,2}";
+
+mp.msg.COMPASS_EXAM = function(dir, ob)
+	if dir == 'u_to' then
+		p "Вверху"
+	elseif dir == 'd_to' then
+		p "Внизу"
+	elseif dir == 'out_to' or dir == 'in_to' then
+		p "В этом направлении"
+	else
+		p "На {#first/пр,2}"
+	end
+	if ob:hint'plural' then
+		p "находятся"
+	else
+		p "находится"
+	end
+	p (ob:noun(),".")
+end
+
+mp.msg.enter = "<ввод>"
+mp.msg.EMPTY = 'Простите?'
+mp.msg.UNKNOWN_VERB = "Непонятный глагол"
+mp.msg.UNKNOWN_VERB_HINT = function(w)
+	p ("Самое похожее слово: ", iface:em(w), ".")
+end
+mp.msg.INCOMPLETE = "Нужно дополнить предложение."
+mp.msg.INCOMPLETE_NOUN = "К чему вы хотите применить команду"
+mp.msg.INCOMPLETE_SECOND_NOUN = "Уточните команду:"
+mp.msg.UNKNOWN_OBJ = function(w)
+	if not w then
+		p "Об этом предмете ничего не известно."
+	else
+		p "Об этом предмете ничего не известно "
+		p ("(",w,").")
+	end
+end
+mp.msg.NOTHING_OBJ = "Ничего подходящего нет."
+mp.msg.UNKNOWN_WORD = function(w)
+	if not w then
+		p "Фраза не распознана."
+	else
+		p "Фраза не распознана "
+		p ("(",w,"?).")
+	end
+end
+mp.msg.HINT_WORDS = "Возможно"
+mp.msg.AND = "и"
+mp.msg.OR = "или"
+mp.msg.MULTIPLE = "Тут есть"
+mp.msg.LIVE_ACTION = function(w)
+	p (w:It'дт'," это не понравится.")
+end
+mp.msg.NO_LIVE_ACTION = "Действие применимо только к одушевлённым объектам."
+
+mp.msg.NOTINV = function(t)
+	p (lang.cap(t:noun'вн') .. " сначала нужно взять.")
+end
+--"надет"
+mp.msg.WORN = function(w)
+	local hint = w:gram().hint
+	pr (" (",mp.mrd:word('надет/' .. hint), ")")
+end
+--"открыт"
+mp.msg.OPEN = function(w)
+	local hint = w:gram().hint
+	pr (" (",mp.mrd:word('открыт/' .. hint), ")")
+end
+mp.msg.EXITBEFORE = "Возможно, {#me/дт} нужно сначала "..
+	"{#if_has/#where,supporter,слезть с {#where/рд}.,покинуть {#where/вн}.}"
+
+mp.default_Event = "Exam"
+mp.default_Verb = "осмотреть"
+
+--"доступен"
+mp.msg.ACCESS1 = "{#First} отсюда не{#word/доступен,#first}."
+mp.msg.ACCESS2 = "{#Second} отсюда не{#word/доступен,#second}."
+
+mp.msg.Look.HEREIS = "Здесь находится"
+mp.msg.Look.HEREARE = "Здесь находятся"
+
+mp.msg.NOROOM = function(w)
+	if w == std.me() then
+		p ("У {#me/рд} слишком много вещей.")
+	elseif w:has'supporter' then
+		p ("На ", w:noun'пр,2', " больше нет места.")
+	else
+		p ("В ", w:noun'пр,2', " больше нет места.")
+	end
+end
+--"включён"
+--"выключен"
+mp.msg.Exam.SWITCHSTATE = "{#First} сейчас {#if_has/#first,on,{#word/включён,#first},{#word/выключен,#first}}."
+mp.msg.Exam.NOTHING = "ничего нет."
+mp.msg.Exam.IS = "находится"
+mp.msg.Exam.ARE = "находятся"
+mp.msg.Exam.IN = "В {#first/пр,2}"
+mp.msg.Exam.ON = "На {#first/пр,2}"
+--"видеть"
+mp.msg.Exam.DEFAULT = "{#Me} не {#word/видеть,#me,нст} {#vo/{#first/пр}} ничего необычного.";
+mp.msg.Exam.SELF = "{#Me} не {#word/видеть,#me,нст} в себе ничего необычного.";
+
+--"открыт"
+mp.msg.Exam.OPENED = "{#First} {#word/открыт,нст,#first}."
+--"закрыт"
+mp.msg.Exam.CLOSED = "{#First} {#word/закрыт,нст,#first}."
+--"находить"
+mp.msg.LookUnder.NOTHING = "{#Me} не {#word/находить,нст,#me} под {#first/тв} ничего интересного."
+--"могу"
+--"закрыт"
+--"держать"
+--"залезать"
+mp.msg.Enter.ALREADY = "{#Me} уже {#if_has/#first,supporter,на,в} {#first/пр,2}."
+mp.msg.Enter.INV = "{#Me} не {#word/могу,#me,нст} зайти в то, что {#word/держать,#me,нст} в руках."
+mp.msg.Enter.IMPOSSIBLE = "Но в/на {#first/вн} невозможно войти, встать, сесть или лечь."
+mp.msg.Enter.CLOSED = "{#First} {#word/закрыт,#first}, и {#me} не {#word/мочь,#me,нст} зайти туда."
+mp.msg.Enter.ENTERED = "{#Me} {#word/залезать,нст,#me} {#if_has/#first,supporter,на,в} {#first/вн}."
+mp.msg.Enter.DOOR_NOWHERE = "{#First} никуда не ведёт."
+--"закрыт"
+mp.msg.Enter.DOOR_CLOSED = "{#First} {#word/закрыт,#first}."
+
+mp.msg.Walk.ALREADY = mp.msg.Enter.ALREADY
+mp.msg.Walk.WALK = "Но {#first} и так находится здесь."
+mp.msg.Walk.NOWHERE = "Куда именно?"
+mp.msg.Walk.INV = "Но {#first} у {#me/рд} с собой."
+
+mp.msg.Enter.EXITBEFORE = "Сначала нужно {#if_has/#where,supporter,слезть с {#where/рд}.,покинуть {#where/вн}.}"
+
+mp.msg.Exit.NOTHERE = "Но {#me} сейчас не {#if_has/#first,supporter,на,в} {#first/пр,2}."
+mp.msg.Exit.NOWHERE = "Но {#me/дт} некуда выходить."
+mp.msg.Exit.CLOSED = "Но {#first} {#word/закрыт,#first}."
+
+--"покидать"
+--"слезать"
+mp.msg.Exit.EXITED = "{#Me} {#if_has/#first,supporter,{#word/слезать {#so/{#first/рд},#me,нст}},"..
+	"{#word/покидать,#me,нст} {#first/вн}}."
+
+mp.msg.GetOff.NOWHERE = "Но {#me/дт} не с чего слезать."
+
+mp.msg.Inv.NOTHING = "У {#me/рд} с собой ничего нет."
+mp.msg.Inv.INV = "У {#me/рд} с собой"
+
+--"открывать"
+mp.msg.Open.OPEN = "{#Me} {#word/открывать,нст,#me} {#first/вн}."
+mp.msg.Open.NOTOPENABLE = "{#First/вн} невозможно открыть."
+--"открыт"
+mp.msg.Open.WHENOPEN = "{#First/} уже {#word/открыт,#first}."
+--"заперт"
+mp.msg.Open.WHENLOCKED = "Похоже, что {#first/} {#word/заперт,#first}."
+
+--"закрывать"
+mp.msg.Close.CLOSE = "{#Me} {#word/закрывать,нст,#me} {#first/вн}."
+mp.msg.Close.NOTOPENABLE = "{#First/вн} невозможно закрыть."
+--"закрыт"
+mp.msg.Close.WHENCLOSED = "{#First/} уже {#word/закрыт,#first}."
+
+mp.msg.Lock.IMPOSSIBLE = "{#First/вн} невозможно запереть."
+--"заперт"
+mp.msg.Lock.LOCKED = "{#First} уже {#word/заперт,#first}."
+--"закрыть"
+mp.msg.Lock.OPEN = "Сначала необходимо закрыть {#first/вн}."
+--"подходит"
+mp.msg.Lock.WRONGKEY = "{#Second} не {#word/подходит,#second} к замку."
+--"запирать"
+mp.msg.Lock.LOCK = "{#Me} {#word/запирать,#me,нст} {#first/вн}."
+
+mp.msg.Unlock.IMPOSSIBLE = "{#First/вн} невозможно отпереть."
+--"заперт"
+mp.msg.Unlock.NOTLOCKED = "{#First} не {#word/заперт,#first}."
+--"подходит"
+mp.msg.Unlock.WRONGKEY = "{#Second} не {#word/подходит,нст,#second} к замку."
+--"отпирать"
+mp.msg.Unlock.UNLOCK = "{#Me} {#word/отпирать,#me,нст} {#first/вн}."
+
+mp.msg.Take.HAVE = "У {#me/вн} и так {#firstit} уже есть."
+mp.msg.Take.TAKE = "{#Me} {#verb/take} {#first/вн}."
+mp.msg.Take.SELF = "{#Me} есть у {#me/рд}."
+--"находиться"
+mp.msg.Take.WHERE = "Нельзя взять то, {#if_hint/#where,supporter,на,в} чём {#me} {#word/находиться,#me}."
+
+mp.msg.Take.LIFE = "{#First/дт} это вряд ли понравится."
+--"закреплён"
+mp.msg.Take.STATIC = "{#First} жестко {#word/закреплён,#first}."
+mp.msg.Take.SCENERY = "{#First/вн} невозможно взять."
+
+--"надет"
+mp.msg.Take.WORN = "{#First} {#word/надет,#first} на {#firstwhere/вн}."
+mp.msg.Take.PARTOF = "{#First} {#if_hint/#first,plural,являются,является} частью {#firstwhere/рд}."
+
+mp.msg.Remove.WHERE = "{#First} не {#word/находиться,#first,нст} {#if_has/#second,supporter,на,в} {#second/пр,2}."
+--"поднят"
+--"извлечён"
+mp.msg.Remove.REMOVE = "{#First} {#if_has/#second,supporter,{#word/поднят с,#first},"..
+	"{#word/извлечён из,#first}} {#second/рд}."
+
+mp.msg.Drop.SELF = "У {#me/рд} не хватит ловкости."
+mp.msg.Drop.WORN = "{#First/вн} сначала нужно снять."
+--"помещать"
+mp.msg.Insert.INSERT = "{#Me} {#word/помещать,нст,#me} {#first/вн} в {#second/вн}."
+mp.msg.Insert.CLOSED = "{#Second} {#word/закрыт,#second}."
+mp.msg.Insert.NOTCONTAINER = "{#Second} не {#if_hint/#second,plural,могут,может} что-либо содержать."
+mp.msg.Insert.WHERE = "Нельзя поместить {#first/вн} внутрь себя."
+mp.msg.Insert.ALREADY = "Но {#first} уже и так {#word/находиться,#first} там."
+mp.msg.PutOn.NOTSUPPORTER = "Класть что-либо на {#second/вн} бессмысленно."
+--"класть"
+mp.msg.PutOn.PUTON = "{#Me} {#word/класть,нст,#me} {#first/вн} на {#second/вн}."
+mp.msg.PutOn.WHERE = "Нельзя поместить {#first/вн} на себя."
+
+--"брошен"
+mp.msg.Drop.DROP = "{#First} {#word/брошен,#first}."
+
+mp.msg.ThrowAt.NOTLIFE = "Бросать {#first/вн} в {#second/вн} бесполезно."
+mp.msg.ThrowAt.THROW = "У {#me/рд} не хватает решимости бросить {#first/вн} в {#second/вн}."
+
+
+mp.msg.Wear.NOTCLOTHES = "Надеть {#first/вн} невозможно."
+mp.msg.Wear.WORN = "{#First} уже на {#me/дт}."
+--"надевать"
+mp.msg.Wear.WEAR = "{#Me} {#word/надевать,#me,нст} {#first/вн}."
+
+mp.msg.Disrobe.NOTWORN = "{#First} не на {#me/дт}."
+--"снимать"
+mp.msg.Disrobe.DISROBE = "{#Me} {#word/снимать,#me,нст} {#first/вн}."
+
+mp.msg.SwitchOn.NONSWITCHABLE = "{#First/вн} невозможно включить."
+--"включён"
+mp.msg.SwitchOn.ALREADY = "{#First} уже {#word/включён,#first}."
+--"включать"
+mp.msg.SwitchOn.SWITCHON = "{#Me} {#word/включать,#me,нст} {#first/вн}."
+
+mp.msg.SwitchOff.NONSWITCHABLE = "{#First/вн} невозможно выключить."
+--"выключён"
+mp.msg.SwitchOff.ALREADY = "{#First} уже {#word/выключён,#first}."
+--"выключать"
+mp.msg.SwitchOff.SWITCHOFF = "{#Me} {#word/выключать,#me,нст} {#first/вн}."
+
+--"годится"
+mp.msg.Eat.NOTEDIBLE = "{#First} не {#word/годится,#first} в пищу."
+mp.msg.Taste.TASTE = "Никакого необычного вкуса нет."
+
+--"съедать"
+mp.msg.Eat.EAT = "{#Me} {#word/съедать,нст,#me} {#first/вн}."
+mp.msg.Drink.IMPOSSIBLE = "Выпить {#first/вн} невозможно."
+
+mp.msg.Push.STATIC = "{#First/вн} трудно сдвинуть с места."
+mp.msg.Push.SCENERY = "{#First/вн} двигать невозможно."
+mp.msg.Push.PUSH = "Ничего не произошло."
+
+mp.msg.Pull.STATIC = "{#First/вн} трудно сдвинуть с места."
+mp.msg.Pull.SCENERY = "{#First/вн} двигать невозможно."
+mp.msg.Pull.PULL = "Ничего не произошло."
+
+mp.msg.Turn.STATIC = "{#First/вн} трудно сдвинуть с места."
+mp.msg.Turn.SCENERY = "{#First/вн} двигать невозможно."
+mp.msg.Turn.TURN = "Ничего не произошло."
+
+mp.msg.Wait.WAIT = "Проходит немного времени."
+
+mp.msg.Touch.LIVE = "Не стоит давать волю рукам."
+mp.msg.Touch.TOUCH = "Никаких необычных ощущений нет."
+mp.msg.Touch.MYSELF = "{#Me} на месте."
+
+mp.msg.Rub.RUB = "Тереть {#first/вн} бессмысленно."
+mp.msg.Sing.SING = "С таким слухом и голосом как у {#me/рд} этого лучше не делать."
+
+mp.msg.Give.MYSELF = "{#First} и так у {#me/рд} есть."
+mp.msg.Give.GIVE = "{#Second/вн} это не заинтересовало."
+mp.msg.Show.SHOW = "{#Second/вн} это не впечатлило."
+
+mp.msg.Burn.BURN = "Поджигать {#first/вн} бессмысленно."
+mp.msg.Burn.BURN2 = "Поджигать {#first/вн} {#second/тв} бессмысленно."
+--"поверь"
+mp.msg.Wake.WAKE = "Это не сон, а явь."
+mp.msg.WakeOther.WAKE = "Будить {#first/вн} не стоит."
+mp.msg.WakeOther.NOTLIVE = "Бессмысленно будить {#first/вн}."
+
+mp.msg.PushDir.PUSH = "Передвигать это нет смысла."
+
+mp.msg.Kiss.NOTLIVE = "Странное желание."
+mp.msg.Kiss.KISS = "{#Firstit/дт} это может не понравиться."
+mp.msg.Kiss.MYSELF = "Ну уж нет."
+
+mp.msg.Think.THINK = "Отличная идея!"
+mp.msg.Smell.SMELL = "Никакого необычного запаха нет."
+mp.msg.Smell.SMELL2 = "Пахнет как {#first}."
+
+mp.msg.Listen.LISTEN = "Никаких необычных звуков нет."
+--"прислушаться"
+mp.msg.Listen.LISTEN2 = "{#Me} {#word/прислушаться,#me,прш} к {#first/дт}. Никаких необычных звуков нет."
+
+--"выкопать"
+mp.msg.Dig.DIG = "{#Me} ничего не {#word/выкопать,#me,прш}."
+mp.msg.Dig.DIG2 = "Копать {#first/вн} бессмысленно."
+mp.msg.Dig.DIG3 = "Копать {#first/вн} {#second/тв} бессмысленно."
+
+mp.msg.Cut.CUT = "Резать {#first/вн} бессмысленно."
+mp.msg.Cut.CUT2 = "Резать {#first/вн} {#second/тв} бессмысленно."
+
+mp.msg.Tear.TEAR = "Рвать {#first/вн} бессмысленно."
+
+mp.msg.Tie.TIE = "Привязывать {#first/вн} бессмысленно."
+mp.msg.Tie.TIE2 = "Привязывать {#first/вн} к {#second/дт} бессмысленно."
+
+mp.msg.Blow.BLOW = "Дуть на/в {#first/вн} бессмысленно."
+
+mp.msg.Attack.LIFE = "Агрессия к {#first/дт} неоправданна."
+mp.msg.Attack.ATTACK = "Сила есть -- ума не надо?"
+--"хотеть"
+mp.msg.Sleep.SLEEP = "{#Me} не {#word/хотеть,#me,нст} спать."
+mp.msg.Swim.SWIM = "Для этого здесь недостаточно воды."
+mp.msg.Fill.FILL = "Наполнять {#first/вн} бессмысленно."
+--"подпрыгивать"
+mp.msg.Jump.JUMP = "{#Me} глупо {#word/подпрыгивать,#me,нст}."
+mp.msg.JumpOver.JUMPOVER = "Прыгать через {#first/вн} бессмысленно."
+
+--"находить"
+mp.msg.Consult.CONSULT = "{#Me} не {#word/находить,#me,нст} ничего подходящего."
+
+--"помахать"
+mp.msg.WaveHands.WAVE = "{#Me} глупо {#word/помахать,прш,#me} руками."
+mp.msg.Wave.WAVE = "{#Me} глупо {#word/помахать,прш,#me} {#first/тв}."
+
+mp.msg.Talk.SELF = "Беседы не получилось."
+--"уметь"
+mp.msg.Talk.NOTLIVE = "{#First} не {#word/уметь,#first,нст} разговаривать."
+--"отреагировать"
+mp.msg.Talk.LIVE = "{#First} никак не {#word/отреагировать,#first}."
+
+mp.msg.Tell.SELF = "Беседы не получилось."
+
+--"безмолвен"
+mp.msg.Tell.NOTLIVE = "{#First} {#word/безмолвен,#first}."
+--"отреагировать"
+mp.msg.Tell.LIVE = "{#First} никак не {#word/отреагировать,#first}."
+--"нашёл"
+mp.msg.Tell.EMPTY = "{#Me} не {#word/нашёл,#me,прш} что сказать."
+
+--"отвечать"
+mp.msg.Ask.NOTLIVE = "Ответа не последовало."
+--"ответить"
+mp.msg.Ask.LIVE = "{#First} не {#word/ответить,прш,#first}."
+--"придумать"
+mp.msg.Ask.EMPTY = "{#Me} не {#word/придумать,#me,прш} что спросить."
+mp.msg.Ask.SELF = "Хороший вопрос."
+
+--"отвечать"
+mp.msg.Answer.NOTLIVE = "Ответа не последовало."
+--"ответить"
+mp.msg.Answer.LIVE = "{#First} не {#word/ответить,прш,#first}."
+--"придумать"
+mp.msg.Answer.EMPTY = "{#Me} не {#word/придумать,#me,прш} что ответить."
+mp.msg.Answer.SELF = "Хороший ответ."
+
+mp.msg.Yes.YES = "Вопрос был риторическим."
+
+mp.msg.Use.USE = "Как именно?"
+
+--"продаваться"
+mp.msg.Buy.BUY = "{#First} не {#word/продаваться,нст,#first}."
+
+mp.keyboard_space = '<пробел>'
+mp.keyboard_backspace = '<удалить>'
+
+mp.msg.verbs.take = -"брать,#me,нст"
+
+mp.msg.GAMEOVER_HELP = [[Чтобы начать заново, введите рестарт.]];
+
+local function dict(t, hint)
+	local g = std.split(hint, ",")
+	for _, v in ipairs(g) do
+		if t[v] then
+			return t[v]
+		end
+	end
+end
+
+function mp:myself(_, hint)
+	local ww = dict({
+			["вн"] = { "себя" };
+			["дт"] = { "себе" };
+			["тв"] = {"собой" };
+			["пр"] = { "себе" };
+			["рд"] = { "себя" };
+		 }, hint)
+	return ww
+end
+
+function mp:it(w, hint)
+	hint = hint or ''
+	if w:hint'plural' then
+		return mp.mrd:noun(-"они/"..hint)
+	elseif w:hint'neuter' then
+		return mp.mrd:noun(-"оно/"..hint)
+	elseif w:hint'female' then
+		return mp.mrd:noun(-"она/"..hint)
+	end
+	return mp.mrd:noun(-"он/"..hint)
+end
+
+function mp:synonyms(w, hint)
+	local nt = {
+		['его'] = 'него';
+		['её'] = 'неё';
+		['ее'] = 'нее';
+		['ей'] = 'ней';
+		['им'] = 'ним';
+		['ими'] = 'ними';
+		['их'] = 'них';
+		['ему'] = 'нему';
+	}
+	local t = self:it(w, hint)
+	return { t, nt[t] }
+end
+
+mp.keyboard = {
+	'А','Б','В','Г','Д','Е','Ё','Ж','З','И','Й',
+	'К','Л','М','Н','О','П','Р','О','С','Т','У','Ф',
+	'Х','Ц','Ч','Ш','Щ','Ь','Ы','Ъ','Э','Ю','Я'
+}
+
+local function hints(w)
+	local h = std.split(w, ",")
+	local ret = {}
+	for _, v in ipairs(h) do
+		ret[v] = true
+	end
+	return ret
+end
+
+function mp:err_noun(noun)
+	if noun == '*' then return "{$fmt em|<любое слово>}" end
+	local hint = std.split(noun, "/")
+	local rc = "{$fmt em|"
+	if #hint == 2 then
+		local h = hints(hint[2])
+		local acc = 'кто/что'
+		if h["им"] then
+			acc = 'кто/что'
+		elseif h["рд"] then
+			acc = 'кого/чего'
+		elseif h["дт"] then
+			acc = 'кому/чему'
+		elseif h["вн"] then
+			acc = 'кого/что'
+		elseif h["тв"] then
+			acc = 'кем/чем'
+		elseif h["пр"] or h["пр2"] then
+			acc = 'ком/чём'
+		end
+		rc = rc ..  acc
+	else
+		rc = rc .. "кто/что"
+	end
+	rc = rc .. "}"
+	return rc
+end
+
+function mp.shortcut.vo(hint)
+	local w = std.split(mp.mrd.lang.norm(hint))
+	local utf = mp.utf
+	local vow = lang.is_vowel
+	local char = utf.char
+	local excl = {
+		["льве"] = true,
+		["львах"] = true,
+		["льду"] = true,
+		["льдах"] = true,
+		["льне"] = true,
+		["льнах"] = true,
+		["лбу"] = true,
+		["лбах"] = true,
+		["лжи"] = true,
+		["лжах"] = true,
+		["мху"] = true,
+		["мхах"] = true,
+		["рву"] = true,
+		["рвах"] = true,
+		["ржи"] = true,
+		["ржах"] = true,
+		["рту"] = true,
+		["ртах"] = true,
+		["мне"] = true,
+		["что"] = true,
+	}
+	w = w[#w]
+	if mp.utf.len(w) > 2 and
+		(vow(char(w, 1) == 'в' or vow(char(w, 1) == 'ф') and
+		not vow(char(w, 2)))) or excl[w] then
+		return "во ".. hint
+	end
+	return "в ".. hint
+end
+
+function mp.shortcut.so(hint)
+	local w = std.split(mp.mrd.lang.norm(hint))
+	local utf = mp.utf
+	w = w[#w]
+	if utf.len(w) > 2 and
+		(not lang.is_vowel(utf.char(w, 1) and
+		not lang.is_vowel(utf.char(w, 2))))
+		or utf.char(w, 1) == 'щ' then
+		return "со ".. hint
+	end
+	return "с ".. hint
+end
+
+function mp:before_Enter(w)
+	if mp:compass_dir(w) then
+		mp:xaction("Walk", w)
+		return
+	end
+	return false
+end
+
+mp.msg.HELP = function()
+	p [[{$fmt b|КАК ИГРАТЬ?}^^
+
+Вводите ваши действия в виде простых предложений вида: глагол -- существительное. Например:^
+> открыть дверь^
+> отпереть дверь ключом^
+> идти на север^
+> взять кепку^
+^
+Чтобы снова увидеть описание обстановки, введите "осмотреть", "осм" или просто нажмите "ввод".^
+^
+Чтобы осмотреть предмет, введите "осмотреть книгу" или просто "книга".^
+^
+Попробуйте "осмотреть себя" и узнать, кто вы.^
+^
+Чтобы узнать какие предметы у вас с собой, наберите "инвентарь" или "инв".^
+^
+Для перемещений используйте стороны света, например: "идти на север" или "север" или просто "с". Кроме сторон света можно перемещаться вверх ("вверх" или "вв") и вниз ("вниз" или "вн"), "внутрь" и "наружу".]]
+	if not instead.tiny then
+		p [[^^Вы можете воспользоваться клавишей "TAB" для автодополнения ввода.]]
+	end
+end
+
+function mp.token.compass1(_)
+	return "{noun_obj}/@n_to,compass|{noun_obj}/@ne_to,compass|"..
+		"{noun_obj}/@e_to,compass|{noun_obj}/@se_to,compass|"..
+		"{noun_obj}/@s_to,compass|{noun_obj}/@sw_to,compass|"..
+		"{noun_obj}/@w_to,compass|{noun_obj}/@nw_to,compass"
+end
+
+function mp.token.compass2(_)
+	return "{noun_obj}/@u_to,compass|{noun_obj}/@d_to,compass|{noun_obj}/@in_to,compass|{noun_obj}/@out_to,compass"
+end
+
+function mp.shortcut.pref1()
+	return '[по|подо|за|во|про]'
+end
+
+function mp.shortcut.pref2()
+	return '[по|под|за|в|про]'
+end
+
+function mp.shortcut.pref3()
+	return 'по|подъ|за|въ|про'
+end
+
+std.mod_init(function(_)
+Verb { "#Walk",
+	"идти,{#pref1}йти,{#pref1}йди,иди,бежать,{#pref2}бежать,бег/и,{#pref2}бег/и,влез/ть,"..
+	"[|{#pref3}]ехать,едь,сесть,сядь,лечь,ляг,[в|]стать,[в|]стан/ь",
+	"на {compass1} : Walk",
+	"на|в|во {noun}/вн,scene,enterable : Enter",
+	"внутрь {noun}/рд,scene,enterable : Enter",
+	"к {noun}/дт,scene : Walk",
+	"{compass2}: Walk" }
+
+Verb { "#Exit",
+	"[вы|у]йти,выйд/и,уйд/и,вылез/ти,выхо/ди,обратно,назад,выбраться,выберись,выбираться",
+	"из|с|со {noun}/рд,scene : Exit",
+	"в|через|на {noun}/вн,scene,enterable : Enter",
+	"?наружу : Exit" }
+
+Verb { "#Exam",
+	"[о| |по|рас]смотр/еть,[раз|по]гляд/еть",
+	"?на {noun}/вн : Exam",
+	" : Look",
+	"инвентарь : Inv",
+	"~ под {noun}/тв : LookUnder",
+	"~ под {noun}/вн : LookUnder",
+	"~ в|во|на {noun}/пр,2 : Search",
+	"~ внутри {noun}/рд : Search",
+	"~ в|во {noun}/вн : Search",
+	"~ в|во {noun}/пр,2 ?о|?об|?обо|?про * : Consult",
+	"~ ?о|?об|?обо|?про * в|во {noun}/пр,2 : Consult reverse",
+}
+
+Verb { "#Search",
+	"[|по]искать,обыскать,[|по]ищ/и,обыщ/и,[|по]изуч/ать,[|по]исслед/овать",
+	"{noun}/вн : Search",
+	"в|во|на {noun}/пр,2 : Search",
+	"под {noun}/тв : LookUnder",
+	"~ в|во {noun}/пр,2 ?о|?об|?обо|?про * : Consult",
+	"~ ?о|?об|?обо|?про * в|во {noun}/пр,2 : Consult reverse",
+}
+
+Verb { "#Open",
+	"откр/ыть,распах/нуть,раскр/ыть,отвори/ть",
+	"{noun}/вн : Open",
+	"{noun}/вн {noun}/тв,held : Unlock",
+	"~ {noun}/тв,held {noun}/вн : Unlock reverse",
+}
+
+Verb { "#Unlock",
+	"отпереть,отопр/и",
+	"{noun}/вн {noun}/тв,held : Unlock",
+	"~ {noun}/тв,held {noun}/вн : Unlock reverse",
+}
+
+Verb { "#Close",
+	"закры/ть,закро/й",
+	"{noun}/вн : Close",
+	"{noun}/вн {noun}/тв,held : Lock",
+	"~ {noun}/вн на {noun}/вн,held : Lock",
+	"~ {noun}/тв,held {noun}/вн : Lock reverse",
+}
+
+Verb { "#Lock",
+	"запереть",
+	"{noun}/вн {noun}/тв,held : Lock",
+	"~ {noun}/вн на {noun}/вн,held : Lock",
+	"~ {noun}/тв,held {noun}/вн : Lock reverse",
+}
+
+Verb { "#Inv",
+	"инв/ентарь,с собой",
+	"Inv" }
+
+function mp.shortcut.pref4()
+	return '[ |за|подо]'
+end
+
+function mp.shortcut.pref5()
+	return '[ |за|под]'
+end
+
+Verb { "#Take",
+	"взять,возьм/и,{#pref4}брать,{#pref5}бер/и,доста/ть,схват/ить,"..
+	"украсть,украд/и,извле/чь,вын/уть,вытащ/ить",
+	"{noun}/вн,scene : Take",
+	"{noun}/вн,scene из|с|со|у {noun}/рд,inside,holder: Remove",
+	"~ из|с|со|у {noun}/рд,inside,holder {noun}/вн,scene: Remove reverse",
+}
+
+Verb { "#Insert",
+	"воткн/уть,втык/ать,вставить,влож/ить",
+	"[|про|за]сун/уть,вставь/",
+	"{noun}/вн,held в|во {noun}/вн,inside : Insert",
+	"~ {noun}/вн,held внутрь {noun}/рд : Insert",
+	"~ в|во {noun}/вн {noun}/вн : Insert reverse",
+	"~ внутрь {noun}/рд {noun}/вн : Insert reverse",
+}
+
+Verb { "#Drop",
+	"полож/ить,постав/ить,посади/ть,класть,клади/,помест/ить",
+	"{noun}/вн,held : Drop",
+	"{noun}/вн,held в|во {noun}/вн,inside : Insert",
+	"~ {noun}/вн,held внутрь {noun}/рд : Insert",
+	"{noun}/вн,held на {noun}/вн : PutOn",
+	"~ в|во {noun}/вн {noun}/вн : Insert reverse",
+	"~ внутрь {noun}/рд {noun}/вн : Insert reverse",
+	"~ на {noun}/вн {noun}/вн : PutOn reverse",
+}
+
+Verb {
+	"#ThrowAt",
+	"брос/ить,выбро/сить,кин/уть,кида/ть,швыр/нуть,метн/уть,метать",
+	"{noun}/вн,held : Drop",
+	"{noun}/вн,held в|во|на {noun}/вн : ThrowAt",
+	"~ в|во|на {noun}/вн {noun}/вн : ThrowAt reverse",
+	"~ {noun}/вн {noun}/дт : ThrowAt",
+	"~ {noun}/дт {noun}/вн : ThrowAt reverse",
+
+}
+
+Verb {
+	"#Wear",
+	"наде/ть,оде/ть",
+	"{noun}/вн,held : Wear",
+}
+
+Verb {
+	"#Disrobe",
+	"снять,сним/ать",
+	"{noun}/вн,worn : Disrobe",
+	"~ {noun}/вн с|со {noun}/рд : Remove",
+	"~ с|со {noun}/рд {noun}/вн : Remove reverse"
+}
+
+Verb {
+	"#SwitchOn",
+	"включ/ить,вруб/ить,активи/ровать",
+	"{noun}/вн : SwitchOn",
+}
+
+Verb {
+	"#SwitchOff",
+	"выключ/ить,выруб/ить,деактиви/ровать",
+	"{noun}/вн : SwitchOff",
+}
+
+Verb {
+	"#Eat",
+	"есть,съе/сть,куша/ть,скуша/ть,сожр/ать,жри,жрать,ешь",
+	"{noun}/вн,held : Eat",
+}
+
+Verb {
+	"#Taste",
+	"лизать,лизн/уть,попроб/овать,полиз/ать,сосать,пососа/ть",
+	"{noun}/вн : Taste"
+}
+
+Verb {
+	"#Drink",
+	"пить,выпить,выпей,выпью,пью",
+	"{noun}/вн,held : Drink",
+}
+
+function mp.shortcut.pref6()
+	return 'с|по|пере|за'
+end
+
+Verb {
+	"#Push",
+	"толк/ать,пих/ать,нажим/ать,нажм/и,нажать,[{#pref6}]двин/уть,[|{#pref6}]двига/ть,"..
+	"запих/нуть,затолк/ать,[|на]давить",
+	"?на {noun}/вн : Push",
+	"{noun}/вн на|в|во {noun}/вн : Transfer",
+	"~ {noun}/вн к {noun}/дт : Transfer",
+	"{noun}/вн {compass2} : Transfer",
+	"~ на|в|во {noun}/вн {noun}/вн : Transfer reverse",
+	"~ {compass2} {noun}/вн : Transfer reverse"
+}
+
+Verb {
+	"#Pull",
+	"[|вы|по]тян/уть,[|вы|по]тащ/ить,тягать,[|по]волоч/ь,[|по]волок/ти,дёрн/уть,дёрг/ать",
+	"?за {noun}/вн : Pull",
+	"{noun}/вн на|в|во {noun}/вн : Transfer",
+	"~ {noun}/вн к {noun}/дт : Transfer",
+	"{noun}/вн {compass2} : Transfer",
+	"~ на|в|во {noun}/вн {noun}/вн : Transfer reverse",
+	"~ {compass2} {noun}/вн : Transfer reverse"
+}
+
+Verb {
+	"#Turn",
+	"враща/ть,поверн/уть,[|за|по]верт/еть,[|за]крути/ть",
+	"{noun}/вн : Turn"
+}
+
+Verb {
+	"#Wait",
+	"ждать,жди,подожд/ать,ожид/ать",
+	"Wait"
+}
+
+function mp.shortcut.pref7()
+	return 'за|по|про|пере|вы'
+end
+
+Verb {
+	"#Rub",
+	"[|{#pref7}]тереть,[|{#pref7}]три/,[{#pref7}]тира/ть,",
+	"{noun}/вн : Rub"
+}
+
+Verb {
+	"#Sing",
+	"[|с]петь,спой/,пой",
+	"Sing"
+}
+
+Verb {
+	"#Touch",
+	"[ |по]трога/ть,трон/уть,дотрон/уться,[ |при]косну/ться,касать/ся,[ |по|о]щупа/ть,[ |по]глад/ить",
+	"{noun}/вн : Touch",
+	"~ до {noun}/рд : Touch",
+	"~ к {noun}/дт : Touch",
+	"~ {noun}/рд : Touch",
+}
+
+Verb {
+	"#Give",
+	"дать,отда/ть,предло/жить,предла/гать,дам,даю,дадим",
+	"{noun}/вн,held {noun}/дт,live : Give",
+	"~ {noun}/дт,live {noun}/вн,held : Give reverse",
+}
+
+Verb {
+	"#Show",
+	"показ/ать,покаж/и",
+	"{noun}/вн,held {noun}/дт,live : Show",
+	"~ {noun}/дт,live {noun}/вн,held : Show reverse",
+}
+
+Verb {
+	"#Burn",
+	"[|под]жечь,жг/и,подожги/,поджиг/ай,зажг/и,зажиг/ай,зажечь",
+	"{noun}/вн : Burn",
+	"{noun}/вн {noun}/тв,held : Burn",
+	"~ {noun}/тв,held {noun}/вн : Burn reverse",
+}
+
+Verb {
+	"#Wake",
+	"будить,разбуд/ить,просн/уться,бужу",
+	"{noun}/вн,live : WakeOther",
+	"Wake",
+}
+
+Verb {
+	"#Kiss",
+	"целовать,поцел/овать,чмок/нуть,обним/ать,обнять,целуй",
+	"{noun}/вн,live : Kiss"
+}
+
+Verb {
+	"#Think",
+	"дума/ть,мысл/ить,подум/ать,рассужд/ать",
+	"Think"
+}
+
+Verb {
+	"#Smell",
+	"нюха/ть,понюха/ть,занюх/ать,нюхн/уть,принюх/аться",
+	"Smell",
+	"{noun}/вн : Smell"
+}
+
+Verb {
+	"#Listen",
+	"слуша/ть,послуша/ть,прислушать/ся,слыш/ать,слух/",
+	"Listen",
+	"{noun}/вн : Listen",
+	"~ к {noun}/дт : Listen",
+}
+
+Verb {
+	"#Dig",
+	"копа/ть,выкопа/ть,выры/ть,рыть,рой,вырой",
+	"Dig",
+	"{noun}/вн,scene : Dig",
+	"{noun}/вн,scene {noun}/тв,held : Dig",
+	"~ {noun}/тв,held {noun}/вн,scene : Dig reverse",
+}
+
+function mp.shortcut.pref8()
+	return '[|раз|на|по|от|пере|вы]'
+end
+
+Verb {
+	"#Cut",
+	"{#pref8}рез/ать,{#pref8}реж/ь",
+	"{noun}/вн : Cut",
+	"{noun}/вн {noun}/тв,held: Cut",
+	"~ {noun}/тв,held {noun}/вн: Cut reverse"
+}
+
+function mp.shortcut.pref9()
+	return '[ |по|разо|со]'
+end
+
+Verb {
+	"#Tear",
+	"{#pref9}рвать,{#pref9}рви/,{#pref9}рву",
+	"{noun}/вн : Tear",
+}
+
+Verb {
+	"#Tie",
+	"[при|с]вяз/ать,[при|с]вяж/и",
+	"{noun}/вн : Tie",
+	"{noun}/вн к {noun}/дт : Tie",
+	"~ {noun}/вн с|со {noun}/тв : Tie",
+	"~ к {noun}/дт {noun}/вн : Tie reverse",
+	"~ с|со {noun}/тв {noun}/вн : Tie reverse",
+}
+
+Verb {
+	"#Blow",
+	"дуть,дуй/,дун/ь,задут/ь,задун/ь,задуй/",
+	"в|во|на {noun}/вн : Blow",
+	"~ {noun}/вн : Blow", -- задуть
+}
+
+Verb {
+	"#Attack",
+	"атак/овать,[|у|вы|раз|по|выши]бить,[|по|раз]бей/,удар/ить,"..
+	"[|с|раз|по|вы|вз]лома/ть,разруш/ить,побь/,круш/ить,напасть,напад/ать,пнуть",
+	"?на {noun}/вн : Attack"
+}
+
+Verb {
+	"#Sleep",
+	"спать,усн/уть,засн/уть,дрем/ать",
+	"Sleep",
+}
+
+Verb {
+	"#Swim",
+	"плыть,плав/ать,ныря/ть,уплы/ть,поплы/ть,нырн/уть,[ |ис]купа/ться",
+	"Swim",
+}
+
+Verb {
+	"#Consult",
+	"[|про|по]чита/ть,проч/есть",
+	"в|во {noun}/пр,2 о|об|обо|про * : Consult",
+	"~ о|об|обо|про * в|во {noun}/пр,2 : Consult reverse",
+	"~ {noun}/вн : Exam",
+}
+
+Verb {
+	"#Fill",
+	"наполн/ить,нали/ть",
+	"?в {noun}/вн : Fill",
+	"~ внутрь {noun}/рд : Fill"
+}
+
+Verb {
+	"#Jump",
+	"[|по]прыг/ать,скак/ать,[|пере|под]прыг/нуть,переско/чить",
+	"Jump",
+	"через {noun}/вн,scene : JumpOver",
+	"~ в {noun}/вн,scene : Enter",
+	"~ на {noun}/вн,scene : Climb",
+	"~ с|со {noun}/рд,scene : GetOff",
+	"~ {compass2} : Walk",
+	"~ +через {noun}/вн,scene : JumpOver",
+}
+
+Verb {
+	"#Wave",
+	"[|по]мах/ать,взмахн/уть,помаш/и",
+	"WaveHands",
+	"~ руками : WaveHands",
+	"{noun}/тв,held : Wave"
+}
+
+Verb {
+	"#Climb",
+	"[|за|по|про|в]лез/ть,карабк/аться,взбир/ться,взобраться,взбери/сь",
+	"на {noun}/вн,scene : Climb",
+	"по {noun}/дт,scene : Climb",
+	"~ внутрь {noun}/рд,scene : Enter",
+	"~ в|во {noun}/вн,scene : Enter",
+	"{compass2}: Walk",
+}
+
+Verb {
+	"#GetOff",
+	"слез/ть,спусти/ться,встать,встан/ь",
+	"GetOff",
+	"{compass2}: Walk",
+	"с|со {noun}/рд,scene : GetOff",
+}
+
+Verb {
+	"#Buy",
+	"купи/ть,покупать",
+	"{noun}/вн,scene : Buy"
+}
+
+Verb {
+	"#Talk",
+	"[|по]говор/ить,[|по]бесед/овать,разговарива/ть",
+	"с|со {noun}/тв,live : Talk"
+
+}
+
+Verb {
+	"#Tell",
+	"сказать,сообщи/ть,сообщу,рассказать,расскаж/ите",
+	"{noun}/дт,live о|об|обо|про * : Tell",
+	"~ * {noun}/дт,live : Tell reverse",
+	"~ {noun}/дт * : Tell"
+}
+
+Verb {
+	"#Ask",
+	"спросит/ь,расспросит/ь",
+	"{noun}/вн,live о|об|обо|про * : Ask",
+	"~ у {noun}/рд,live о|об|обо|про * : Ask",
+	"~ о|об|обо|про * у {noun}/рд,live : Ask reverse",
+}
+
+Verb {
+	"#AskFor",
+	"попроси/ть,выпроси/ть,уговори/ть,проси/ть,попрош/у,выпрош/у",
+	"у {noun}/рд,live * : AskFor",
+	"* у {noun}/рд,live : AskFor reverse",
+	"~ {noun}/вн,live * : AskTo",
+}
+
+Verb {
+	"#Answer",
+	"ответ/ить,отвеч/ать",
+	"{noun}/дт,live * : Answer",
+	"~ * {noun}/дт,live : Answer reverse",
+}
+
+Verb {
+	"#Yes",
+	"да",
+	"Yes",
+}
+
+Verb {
+	"#No",
+	"нет",
+	"No",
+}
+
+Verb {
+    "~ использ/овать,воспольз/оваться",
+    "{noun}/вн : Use",
+    "{noun}/тв : Use",
+}
+
+if DEBUG then
+
+function mp:MetaForm(w)
+	if not w then return end
+	local t, hint
+	w = w:gsub("_", "/")
+	if w:find "/" then
+		hint = true
+	end
+	for _, f in ipairs { "им", "рд", "дт", "вн", "тв", "пр", "пр,2" } do
+		local ww = w
+		if hint then
+			ww = ww .. ','.. f
+		else
+			ww = ww .. '/' .. f
+		end
+		t = self.mrd:word(ww)
+		pn(t, " (", f, ")")
+	end
+end
+
+	MetaVerb {
+		"#MetaWord",
+		"~_слово",
+		"* : MetaWord"
+	}
+	MetaVerb {
+		"#MetaNoun",
+		"~_сущ/ествительное",
+		"* : MetaNoun"
+	}
+	MetaVerb {
+		"#MetaTrace",
+		"~_трассировка",
+		"да : MetaTraceOn",
+		"нет : MetaTraceOff",
+	}
+	MetaVerb {
+		"#MetaDump",
+		"~_дамп",
+		"MetaDump"
+	}
+	MetaVerb {
+		"#МетаForm",
+		"~_форм/ы",
+		"* :MetaForm"
+	}
+end
+MetaVerb {
+	"#MetaTranscript",
+	"~транскрипт",
+	"да : MetaTranscriptOn",
+	"нет : MetaTranscriptOff",
+	"MetaTranscript",
+}
+
+MetaVerb {
+	"#MetaExpert",
+	"~парсер",
+	"эксперт да : MetaExpertOn",
+	"эксперт нет : MetaExpertOff",
+	"глаголы : MetaVerbs",
+	"версия : MetaVersion",
+}
+
+MetaVerb {
+	"#MetaSave",
+	"~сохрани/ть",
+	"MetaSave"
+}
+MetaVerb {
+	"#MetaLoad",
+	"~загрузи/ть",
+	"MetaLoad"
+}
+
+if DEBUG then
+MetaVerb {
+	"#MetaAutoplay",
+	"~автоскрипт",
+	"MetaAutoplay"
+}
+end
+
+mp.msg.MetaRestart.RESTART = "Начать заново?";
+
+MetaVerb {
+	"#MetaRestart",
+	"~заново,~рестарт",
+	"MetaRestart"
+}
+MetaVerb {
+	"#MetaHelp",
+	"~помощь,помоги/те",
+	"MetaHelp",
+}
+end, 1)
+
+std.mod_start(function()
+	if mp.undo > 0 then
+		mp.msg.MetaUndo.EMPTY = "Отменять нечего."
+		MetaVerb {
+			"#MetaUndo",
+			"~отмен/ить",
+			"MetaUndo",
+		}
+	end
+	if mp.score then
+		MetaVerb {
+			"~ счёт",
+			"MetaScore",
+		}
+	end
+end)
+-- Dialog
+std.phr.default_Event = "Exam"
+
+Verb ({"~ сказать", "{select} : Exam" }, std.dlg)
+Verb ({'#Next', "дальше", "Next" }, mp.cutscene)
+Verb ({'#Exam', "~ осмотреть", "Look" }, std.dlg)
+
+mp.cutscene.default_Verb = "дальше"
+mp.cutscene.help = fmt.em "<дальше>";
+
+std.dlg.default_Verb = "осмотреть"
+std.player.word = -"ты/мр,2л"
+--luacheck: no self
 local lang = require "morph/lang-en"
 require "parser/mp"
 require "parser/mplib"
@@ -7292,7 +8573,7 @@ function mp:skip_filter(w)
 	return true
 end
 
-_'@compass'.before_Default = 'Try to verb "go".'
+_'@compass'.before_Default = function() p('"{#First}" is the direction. You can not ', mp.parsed[1], ' {#firstit}.') end
 
 function mp.msg.SCORE(d)
 	if d > 0 then
@@ -7313,8 +8594,15 @@ function mp.msg.MULTIDSC(oo, inv)
 end
 
 mp.door.word = "door"
-mp.msg.TITLE_SCORE = "Score: "
-mp.msg.TITLE_TURNS = "Turns: "
+mp.msg.TITLE_SCORE = function()
+	if mp.maxscore then
+		pr ("Score: ", mp.score, "/", mp.maxscore)
+	end
+	pr ("Score: ", mp.score)
+end
+mp.msg.TITLE_TURNS = function()
+	pr ("Turns: ", game:time() - 1)
+end
 mp.msg.YES = "Yes"
 mp.msg.WHEN_DARK = "Darkness."
 mp.msg.UNKNOWN_THEDARK = "Probably, it is because there is no light?"
@@ -7545,9 +8833,12 @@ end
 mp.msg.enter = "<Enter>"
 mp.msg.EMPTY = 'Excuse me?'
 mp.msg.UNKNOWN_VERB = "Unknown verb"
-mp.msg.UNKNOWN_VERB_HINT = "Maybe you meant"
+mp.msg.UNKNOWN_VERB_HINT = function(w)
+	p ("The most similar word is ", iface:em(w), ".")
+end
 mp.msg.INCOMPLETE = "The sentence must be supplemented."
 mp.msg.INCOMPLETE_NOUN = "What do you want to apply the command to"
+mp.msg.INCOMPLETE_SECOND_NOUN = "Clarify the command:"
 mp.msg.UNKNOWN_OBJ = "Here is no such thing"
 mp.msg.UNKNOWN_OBJ = function(w)
 	if not w then
@@ -7567,9 +8858,8 @@ mp.msg.UNKNOWN_WORD = function(w)
 end
 mp.msg.NOTHING_OBJ = "Nothing."
 mp.msg.HINT_WORDS = "Maybe you meant"
-mp.msg.HINT_OR = "or"
-mp.msg.HINT_AND = "and"
 mp.msg.AND = "and"
+mp.msg.OR = "or"
 mp.msg.MULTIPLE = "Here is"
 mp.msg.LIVE_ACTION = function(w)
 	p (mp:It(w), " would not like it.")
@@ -7633,7 +8923,8 @@ mp.msg.Walk.WALK = "But {#thefirst} {#is/#first} already here."
 mp.msg.Walk.NOWHERE = "Where?"
 mp.msg.Walk.INV = "{#Me} {#is/#me} holding this."
 
-mp.msg.Enter.EXITBEFORE = "{#Me} {#present/#me,need} to {#if_has/#where,supporter,get off from,leave} {#thenoun/#where} first."
+mp.msg.Enter.EXITBEFORE = "{#Me} {#present/#me,need} to "..
+	"{#if_has/#where,supporter,get off from,leave} {#thenoun/#where} first."
 
 mp.msg.Exit.NOTHERE = "But {#me} {#is/#me} not {#if_has/#first,supporter,on,in} {#thefirst}."
 mp.msg.Exit.NOWHERE = "But {#me} {#have/#me} no way to exit."
@@ -7899,7 +9190,8 @@ function mp:before_Enter(w)
 	return false
 end
 
-mp.msg.HELP = [[{$fmt b|INSTRUCTIONS}^^
+mp.msg.HELP = function()
+	p [[{$fmt b|INSTRUCTIONS}^^
 
 Enter your actions in verb noun form. For example:^
 > open door^
@@ -7913,13 +9205,17 @@ To examine whole scene, enter "exam" or press "Enter".^
 ^
 To exam your inventory, enter "inv".^
 ^
-Use compass directions to walk. For example: "go north" or "north" or just "n".
-^^
-You may use the "TAB" key for autocompletion.
-]]
+Use compass directions to walk. For example: "go north" or "north" or just "n". There are also up and down directions, outside and inside.]]
+	if not instead.tiny then
+		p [[^^You may use the "TAB" key for autocompletion.]]
+	end
+end
 
 function mp.token.compass1(_)
-	return "{noun_obj}/@n_to,compass|{noun_obj}/@ne_to,compass|{noun_obj}/@e_to,compass|{noun_obj}/@se_to,compass|{noun_obj}/@s_to,compass|{noun_obj}/@sw_to,compass|{noun_obj}/@w_to,compass|{noun_obj}/@nw_to,compass"
+	return "{noun_obj}/@n_to,compass|{noun_obj}/@ne_to,compass|"..
+		"{noun_obj}/@e_to,compass|{noun_obj}/@se_to,compass|"..
+		"{noun_obj}/@s_to,compass|{noun_obj}/@sw_to,compass|"..
+		"{noun_obj}/@w_to,compass|{noun_obj}/@nw_to,compass"
 end
 
 function mp.token.compass2(_)
@@ -8384,6 +9680,8 @@ MetaVerb {
 	"~parser",
 	"expert on : MetaExpertOn",
 	"expert off : MetaExpertOff",
+	"verbs : MetaVerbs",
+	"version : MetaVersion",
 }
 
 MetaVerb {
@@ -8423,6 +9721,12 @@ std.mod_start(function()
 			"MetaUndo",
 		}
 	end
+	if mp.score then
+		MetaVerb {
+		"~ счёт",
+		"MetaScore",
+		}
+	end
 end)
 -- Dialog
 std.phr.default_Event = "Exam"
@@ -8438,7 +9742,7 @@ std.dlg.default_Verb = "examine"
 
 std.player.word = "you/plural,second"
 local curdir = std.getinfo(1).source:gsub("^(.+[\\/])[^\\/]+$", "%1"):gsub("^@", "");
-
+local table = std.table
 require "fmt"
 require "snapshots"
 
@@ -8536,6 +9840,38 @@ local function utf_chars(b)
 	return res
 end
 
+local function utf_similar(str1, str2, lev)
+	local chars1 = utf_chars(str1)
+	local chars2 = utf_chars(str2)
+	local len1 = #chars1
+	local len2 = #chars2
+	if len1 < lev or len2 < lev then
+		return false
+	end
+
+	for i = 0, len2 - lev do
+		local ok = true
+		for k = 1, lev do
+			if chars1[k] ~= chars2[i + k] then
+				ok = false
+				break
+			end
+		end
+		if ok then return true end
+	end
+
+	for i = 0, len1 - lev do
+		local ok = true
+		for k = 1, lev do
+			if chars2[k] ~= chars1[i + k] then
+				ok = false
+				break
+			end
+		end
+		if ok then return true end
+	end
+	return false
+end
 --- Returns the Levenshtein distance between the two given strings.
 -- https://gist.github.com/Badgerati/3261142
 
@@ -8662,7 +9998,9 @@ end
 
 mp = std.obj {
 	nam = '@metaparser';
+	started = false;
 	score = false;
+	maxscore = false;
 	expert_mode = true;
 	autohelp = false;
 	autohelp_limit = 1000;
@@ -8676,7 +10014,7 @@ mp = std.obj {
 	detailed_inv = false;
 	daemons = std.list {};
 	{
-		version = "1.11";
+		version = "2.0";
 		cache = { tokens = {}, nouns = false };
 		scope = std.list {};
 		logfile = false;
@@ -9128,6 +10466,11 @@ function mp:eq(t1, t2, lev)
 		return self:__startswith(t2, t)
 	end
 	if lev then
+		t1 = self:norm(t1)
+		t2 = self:norm(t2)
+		if not utf_similar(t1, t2, 3) then -- 3 is hardcoded
+			return false
+		end
 		local l = utf_lev(t1, t2)
 		if l < lev and l / (utf_len(t1) + utf_len(t2)) <= self.lev_ratio then
 			return l
@@ -9147,7 +10490,7 @@ end
 
 function mp:pattern(t, delim)
 	local words = {}
-	local pat = str_split(self:norm(t), delim or "|")
+	local pat = str_split(t, delim or "|")
 	for _, v in ipairs(pat) do
 		local w = { }
 		local ov = v
@@ -9901,7 +11244,7 @@ function mp:match(verb, w, compl)
 	table.insert(parsed_verb, fixed_verb)
 	for _, d in ipairs(verb.dsc) do -- verb variants
 --		local was_noun = false
-		local match = { args = {}, vargs = {}, ev = d.ev, wildcards = 0, verb = parsed_verb, defaults = 0 }
+		local match = { args = {}, vargs = {}, skip = 0, ev = d.ev, wildcards = 0, verb = parsed_verb, defaults = 0 }
 		local a = {}
 		found = (#d.pat == 0)
 		for k, v in ipairs(w) do
@@ -9935,9 +11278,9 @@ function mp:match(verb, w, compl)
 					need_required = true
 					all_optional = false
 				end
-				if pp.default then
+				default = pp.default
+				if default then
 					word = pp.word
-					default = true
 				end
 				local new_wildcard
 				local k, len = word_search(a, pp.word)
@@ -9947,6 +11290,7 @@ function mp:match(verb, w, compl)
 				else
 					new_wildcard = false
 				end
+				if not required and k ~= 1 then k = false end -- ?word is only in 1st pos
 				if k and ((k < best or len > best_len) or
 					(not new_wildcard and wildcard and k <= best and len >= best_len)) then
 					wildcard = new_wildcard
@@ -10001,19 +11345,27 @@ function mp:match(verb, w, compl)
 						break
 					end
 					rlev = rlev + 1
+				end
+				if (wildcard or match.wildcards > 0) and best > 1 then -- do not skip words if wildcard used
+					found = false
 					vargs = false
+					break
 				end
 --				if false then
 --					a = tab_exclude(a, best, best + best_len - 1)
 --				else
 --				if not was_noun then
+				if not vargs then
+					match.skip = match.skip + (best - 1)
 					for i = 1, best - 1 do
 						table.insert(skip, a[i])
 					end
+				end
 --				end
 					a = tab_sub(a, best + best_len)
 --					table.remove(a, 1)
 --				end
+				vargs = false
 				table.insert(match, word)
 				table.insert(match.args, found)
 				if wildcard then
@@ -10039,9 +11391,14 @@ function mp:match(verb, w, compl)
 				else
 					found = false
 					if #a > 0 or #match.vargs > 0 then
-						table.insert(hints, { word = v, lev = rlev })
+						while #a > 0 do
+							table.insert(match.vargs, a[1])
+							table.insert(match, a[1])
+							table.remove(a, 1)
+						end
+						table.insert(hints, { word = v, lev = rlev, match = match })
 					else
-						table.insert(hints, { word = '*', lev = rlev })
+						table.insert(hints, { word = '*', lev = rlev, match = match })
 					end
 				end
 				if not found then
@@ -10057,10 +11414,14 @@ function mp:match(verb, w, compl)
 					end
 				end
 				if not compl and mp.errhints then
+					local objs = {}
 					for _, pp in ipairs(pat) do -- single argument
-						if mp.utf.len(pp.word) >= 3 then
+						if not pp.synonym and not objs[pp.ob or 0] then
 							local k, _ = word_search(a, pp.word, self.lev_thresh)
-							if k then table.insert(hints, { word = pp.word, lev = rlev, fuzzy = true, match = match }) end
+							if k then
+								table.insert(hints, { word = pp.word, lev = rlev, fuzzy = true, match = match })
+								objs[pp.ob or 1] = true
+							end
 						end
 					end
 				end
@@ -10073,7 +11434,11 @@ function mp:match(verb, w, compl)
 						match.defaults = match.defaults + 1
 					end
 				end
-				table.insert(match.args, { word = false, optional = true } )
+				if default then
+					table.insert(match.args, { word = word, default = true } )
+				else
+					table.insert(match.args, { word = false, optional = true } )
+				end
 --				table.insert(hints, { word = v, lev = rlev })
 				found = true
 			end
@@ -10084,29 +11449,39 @@ function mp:match(verb, w, compl)
 --		end
 		if found or all_optional then
 			match.extra = (#a ~= 0)
-			table.insert(match, 1, fixed_verb) -- w[verb.verb_nr])
-			if self:skip_filter(skip) then
-				table.insert(matches, match)
-			end
-			if #match.vargs == 0 and not vargs then
-				match.vargs = false
+			if not match.extra or match.wildcards == 0 then
+				table.insert(match, 1, fixed_verb) -- w[verb.verb_nr])
+				if self:skip_filter(skip) then
+					table.insert(matches, match)
+				end
+				if #match.vargs == 0 and not vargs then
+					match.vargs = false
+				end
 			end
 		end
 	end
 
 	for k, v in ipairs(matches) do
 		v.nr = k
+--[[
 if false then
 		print("-----------", k)
 		for kk, vv in ipairs(v) do
 			print(vv)
 		end
 end
+]]--
 	end
 
 	table.sort(matches,
 		function(a, b)
 			local na, nb = #a - a.defaults, #b - b.defaults
+			if not a.extra and a.skip == 0 then
+				na = na + 100
+			end
+			if not b.extra and b.skip == 0 then
+				nb = nb + 100
+			end
 			if na == nb and a.wildcards == b.wildcards then
 				return a.nr < b.nr
 			end
@@ -10493,12 +11868,18 @@ function mp:parse(inp)
 end
 
 std.world.display = function(s, state)
-	local l, av, pv
-	if mp.text == '' and game:time() == 1 and state ~= false then
+	local l, av, pv, first
+	if not mp.started and mp.text == '' and game:time() == 1 and state ~= false then
 		local r = std.call(game, 'dsc')
 		if type(r) == 'string' then
-			mp.text = r .. '^^'
+			first = true
+			if mp._pager_mode then
+				mp.text = fmt.anchor() .. r .. '^^' -- .. fmt.anchor()
+			else
+				mp.text = r .. '^^'
+			end
 		end
+		mp.started = true
 	end
 	if mp.clear_on_move and game:time() ~= 1 then
 		if player_moved() then mp:clear() end
@@ -10520,7 +11901,7 @@ std.world.display = function(s, state)
 		    av or false, l or false,
 		    pv or false) or ''
 	mp:log(l)
-	if mp._pager_mode then
+	if mp._pager_mode and not first then
 		mp.text = mp.text ..  fmt.anchor() .. l .. '^^' -- .. fmt.anchor()
 	else
 		mp.text = mp.text ..  l .. '^^' -- .. fmt.anchor()
@@ -10930,6 +12311,7 @@ end
 std.mod_init(
 function()
 	if DEBUG and mp.undo == 0 then mp.undo = 5 end
+	mp:pager_mode(true)
 	_'game'.__daemons = std.list {}
 end)
 
@@ -11257,1245 +12639,23 @@ function std.obj:has(attr)
 end
 
 function iface:title(t)
-	return(iface:bold( mrd.lang.cap(t)))
+	return(iface:bold(mrd.lang.cap(t)))
 end
--- react_ and postreact_ event module for reactions near the object
 
---[[ include 'listen'
-obj {
-	nam = 'npc';
-	react_Take = "Player in this room is taking something. Reject!";
-}:listen();
-]]--
-
---luacheck: globals mp
---luacheck: no self
-game.react_list = std.list {}
-
-function game:before_Any(ev, ...)
-	for _, v in ipairs(game.react_list) do
-		if v:inroom() == std.here() then
-			local r = mp:runmethods('react', ev, v, ...)
-			if r ~= false then
-				return
-			end
+std.getmt("").__pow = function(a, b)
+	if b then
+		if std.is_obj(b) then
+			return b ^ a
 		end
+		return std.rawequal(a, b)
 	end
 	return false
 end
-
-function game:post_Any(ev, ...)
-	for _, v in ipairs(game.react_list) do
-		if v:inroom() == std.here() then
-			local r = mp:runmethods('postreact', ev, v, ...)
-			if r ~= false then
-				return
-			end
-		end
-	end
-	return false
-end
-
-function std.obj.listen(s)
-	game.react_list:add(s)
-	return s
-end
---luacheck: no self
-local lang = require "morph/lang-ru"
-require "parser/mp"
-require "parser/mplib"
-local mp = _'@metaparser'
-
-std.mod_init(
-	function()
-	mp:init(lang)
-end)
-game.dsc = function()
-	p ([[МЕТАПАРСЕР3 Версия: ]]..mp.version.."^")
-	p [[http://instead-hub.github.io^^
-Если вам необходима справка по игре, наберите "помощь".
-^]]
-end
--- local utf = mp.utf
-
-_'@all'.word = -"всё/~од"
-
-_'@darkness'.word = -"тьма,темнота,темень"
-_'@darkness'.before_Any = "Полная, кромешная тьма."
-_'@darkness':attr 'persist'
-
-_'@n_to'.word = -"север";
-_'@ne_to'.word = -"северо-восток";
-_'@e_to'.word = -"восток";
-_'@se_to'.word = -"юго-восток";
-_'@s_to'.word = -"юг";
-_'@sw_to'.word = -"юго-запад";
-_'@w_to'.word = -"запад";
-_'@nw_to'.word = -"северо-запад";
-_'@u_to'.word = -"наверх,вверх,верх";
-_'@d_to'.word = -"вниз,низ";
-_'@out_to'.word = -"наружу,выход,назад";
-_'@in_to'.word = -"внутрь,вход"
-
-mp.shorten = {
-	["с"] = "север";
-	["в"] = "восток";
-	["з"] = "запад";
-	["ю"] = "юг";
-	["св"] = "северо-восток";
-	["юв"] = "юго-восток";
-	["юз"] = "юго-запад";
-	["сз"] = "северо-запад";
-	["вн"] = "вниз";
-	["вв"] = "вверх";
-}
-
-mp.shorten_expert = {
-	["и"] = "инвентарь";
-	["ж"] = "ждать";
-	["о"] = "осмотреть";
-	["осм"] = "осмотреть";
-	["вкл"] = "включить";
-	["выкл"] = "выключить";
-	["см"] = "смотреть";
-}
-
-function mp:skip_filter(w)
-	for _, v in ipairs(w) do
-		if v == 'не' or v == 'кроме' or v == 'вместо' then
-			return false
-		end
-	end
-	return true
-end
-
-_'@compass'.before_Default = 'Попробуйте глагол "идти".'
-
-function mp.msg.SCORE(d)
-	if d > 0 then
-		pn ("{$fmt em|(Счёт увеличился на ", d, ")}")
-	else
-		pn ("{$fmt em|(Счёт уменьшился на ", d, ")}")
-	end
-end
-mp.door.word = -"дверь";
-mp.msg.TITLE_SCORE = "Счёт: "
-mp.msg.TITLE_TURNS = "Ходы: "
-mp.msg.YES = "Да"
-mp.msg.WHEN_DARK = "Кромешная тьма."
-mp.msg.UNKNOWN_THEDARK = "Возможно, это потому что в темноте ничего не видно?"
-mp.msg.COMPASS_NOWAY = "Этот путь недоступен."
-mp.msg.COMPASS_EXAM_NO = "В этом направлении не видно ничего примечательного."
-mp.msg.ENUM = "шт."
-mp.msg.CUTSCENE_HELP = "Для продолжения нажмите <ввод> или введите {$fmt em|дальше}."
-mp.msg.DLG_HELP = "Для выбора фразы введите цифру."
-mp.msg.NO_ALL = "Это действие нельзя применить на всё."
-mp.msg.DROPPING_ALL = function(w)
-	pn (iface:em("(бросить "..w:noun'вн'..")"))
-end
-mp.msg.TAKING_ALL = function(w)
-	pn (iface:em("(взять "..w:noun'вн'..")"))
-end
-mp.msg.TAKE_BEFORE = function(w)
-	pn (iface:em("(сначала взяв "..w:noun'вн'..")"))
-end
-mp.msg.DISROBE_BEFORE = function(w)
-	pn (iface:em("(сначала сняв "..w:noun'вн'..")"))
-end
-
-mp.msg.CLOSE_BEFORE = function(w)
-	pn (iface:em("(сначала закрыв "..w:noun'вн'..")"))
-end
-
---"находиться"
-mp.msg.SCENE = "{#Me} {#word/находиться,#me,нст} {#if_has/#here,supporter,на,в} {#here/пр,2}.";
-mp.msg.INSIDE_SCENE = "{#Me} {#word/находиться,#me,нст} {#if_has/#where,supporter,на,в} {#where/пр,2}.";
-mp.msg.TITLE_INSIDE = "{#if_has/#where,supporter,на,в} {#where/пр,2}";
-
-mp.msg.COMPASS_EXAM = function(dir, ob)
-	if dir == 'u_to' then
-		p "Вверху"
-	elseif dir == 'd_to' then
-		p "Внизу"
-	elseif dir == 'out_to' or dir == 'in_to' then
-		p "В этом направлении"
-	else
-		p "На {#first/пр,2}"
-	end
-	if ob:hint'plural' then
-		p "находятся"
-	else
-		p "находится"
-	end
-	p (ob:noun(),".")
-end
-
-mp.msg.enter = "<ввод>"
-mp.msg.EMPTY = 'Простите?'
-mp.msg.UNKNOWN_VERB = "Непонятный глагол"
-mp.msg.UNKNOWN_VERB_HINT = "Возможно, вы имели в виду"
-mp.msg.INCOMPLETE = "Нужно дополнить предложение."
-mp.msg.INCOMPLETE_NOUN = "К чему вы хотите применить команду"
-mp.msg.INCOMPLETE_SECOND_NOUN = "Уточните команду:"
-mp.msg.UNKNOWN_OBJ = function(w)
-	if not w then
-		p "Об этом предмете ничего не известно."
-	else
-		p "Об этом предмете ничего не известно "
-		p ("(",w,").")
-	end
-end
-mp.msg.NOTHING_OBJ = "Ничего подходящего нет."
-mp.msg.UNKNOWN_WORD = function(w)
-	if not w then
-		p "Фраза не распознана."
-	else
-		p "Фраза не распознана "
-		p ("(",w,"?).")
-	end
-end
-mp.msg.HINT_WORDS = "Может быть"
-mp.msg.HINT_OR = "или"
-mp.msg.HINT_AND = "и"
-mp.msg.AND = "и"
-mp.msg.MULTIPLE = "Тут есть"
-mp.msg.LIVE_ACTION = function(w)
-	p (w:It'дт'," это не понравится.")
-end
-mp.msg.NO_LIVE_ACTION = "Действие применимо только к одушевлённым объектам."
-
-mp.msg.NOTINV = function(t)
-	p (lang.cap(t:noun'вн') .. " сначала нужно взять.")
-end
---"надет"
-mp.msg.WORN = function(w)
-	local hint = w:gram().hint
-	pr (" (",mp.mrd:word('надет/' .. hint), ")")
-end
---"открыт"
-mp.msg.OPEN = function(w)
-	local hint = w:gram().hint
-	pr (" (",mp.mrd:word('открыт/' .. hint), ")")
-end
-mp.msg.EXITBEFORE = "Возможно, {#me/дт} нужно сначала {#if_has/#where,supporter,слезть с {#where/рд}.,покинуть {#where/вн}.}"
-
-mp.default_Event = "Exam"
-mp.default_Verb = "осмотреть"
-
---"доступен"
-mp.msg.ACCESS1 = "{#First} отсюда не{#word/доступен,#first}."
-mp.msg.ACCESS2 = "{#Second} отсюда не{#word/доступен,#second}."
-
-mp.msg.Look.HEREIS = "Здесь находится"
-mp.msg.Look.HEREARE = "Здесь находятся"
-
-mp.msg.NOROOM = function(w)
-	if w == std.me() then
-		p ("У {#me/рд} слишком много вещей.")
-	elseif w:has'supporter' then
-		p ("На ", w:noun'пр,2', " больше нет места.")
-	else
-		p ("В ", w:noun'пр,2', " больше нет места.")
-	end
-end
---"включён"
---"выключен"
-mp.msg.Exam.SWITCHSTATE = "{#First} сейчас {#if_has/#first,on,{#word/включён,#first},{#word/выключен,#first}}."
-mp.msg.Exam.NOTHING = "ничего нет."
-mp.msg.Exam.IS = "находится"
-mp.msg.Exam.ARE = "находятся"
-mp.msg.Exam.IN = "В {#first/пр,2}"
-mp.msg.Exam.ON = "На {#first/пр,2}"
---"видеть"
-mp.msg.Exam.DEFAULT = "{#Me} не {#word/видеть,#me,нст} {#vo/{#first/пр}} ничего необычного.";
-mp.msg.Exam.SELF = "{#Me} не {#word/видеть,#me,нст} в себе ничего необычного.";
-
---"открыт"
-mp.msg.Exam.OPENED = "{#First} {#word/открыт,нст,#first}."
---"закрыт"
-mp.msg.Exam.CLOSED = "{#First} {#word/закрыт,нст,#first}."
---"находить"
-mp.msg.LookUnder.NOTHING = "{#Me} не {#word/находить,нст,#me} под {#first/тв} ничего интересного."
---"могу"
---"закрыт"
---"держать"
---"залезать"
-mp.msg.Enter.ALREADY = "{#Me} уже {#if_has/#first,supporter,на,в} {#first/пр,2}."
-mp.msg.Enter.INV = "{#Me} не {#word/могу,#me,нст} зайти в то, что {#word/держать,#me,нст} в руках."
-mp.msg.Enter.IMPOSSIBLE = "Но в/на {#first/вн} невозможно войти, встать, сесть или лечь."
-mp.msg.Enter.CLOSED = "{#First} {#word/закрыт,#first}, и {#me} не {#word/мочь,#me,нст} зайти туда."
-mp.msg.Enter.ENTERED = "{#Me} {#word/залезать,нст,#me} {#if_has/#first,supporter,на,в} {#first/вн}."
-mp.msg.Enter.DOOR_NOWHERE = "{#First} никуда не ведёт."
---"закрыт"
-mp.msg.Enter.DOOR_CLOSED = "{#First} {#word/закрыт,#first}."
-
-mp.msg.Walk.ALREADY = mp.msg.Enter.ALREADY
-mp.msg.Walk.WALK = "Но {#first} и так находится здесь."
-mp.msg.Walk.NOWHERE = "Куда именно?"
-mp.msg.Walk.INV = "Но {#first} у {#me/рд} с собой."
-
-mp.msg.Enter.EXITBEFORE = "Сначала нужно {#if_has/#where,supporter,слезть с {#where/рд}.,покинуть {#where/вн}.}"
-
-mp.msg.Exit.NOTHERE = "Но {#me} сейчас не {#if_has/#first,supporter,на,в} {#first/пр,2}."
-mp.msg.Exit.NOWHERE = "Но {#me/дт} некуда выходить."
-mp.msg.Exit.CLOSED = "Но {#first} {#word/закрыт,#first}."
-
---"покидать"
---"слезать"
-mp.msg.Exit.EXITED = "{#Me} {#if_has/#first,supporter,{#word/слезать с,#me,нст} {#first/рд},{#word/покидать,#me,нст} {#first/вн}}."
-
-mp.msg.GetOff.NOWHERE = "Но {#me/дт} не с чего слезать."
-
-mp.msg.Inv.NOTHING = "У {#me/рд} с собой ничего нет."
-mp.msg.Inv.INV = "У {#me/рд} с собой"
-
---"открывать"
-mp.msg.Open.OPEN = "{#Me} {#word/открывать,нст,#me} {#first/вн}."
-mp.msg.Open.NOTOPENABLE = "{#First/вн} невозможно открыть."
---"открыт"
-mp.msg.Open.WHENOPEN = "{#First/} уже {#word/открыт,#first}."
---"заперт"
-mp.msg.Open.WHENLOCKED = "Похоже, что {#first/} {#word/заперт,#first}."
-
---"закрывать"
-mp.msg.Close.CLOSE = "{#Me} {#word/закрывать,нст,#me} {#first/вн}."
-mp.msg.Close.NOTOPENABLE = "{#First/вн} невозможно закрыть."
---"закрыт"
-mp.msg.Close.WHENCLOSED = "{#First/} уже {#word/закрыт,#first}."
-
-mp.msg.Lock.IMPOSSIBLE = "{#First/вн} невозможно запереть."
---"заперт"
-mp.msg.Lock.LOCKED = "{#First} уже {#word/заперт,#first}."
---"закрыть"
-mp.msg.Lock.OPEN = "Сначала необходимо закрыть {#first/вн}."
---"подходит"
-mp.msg.Lock.WRONGKEY = "{#Second} не {#word/подходит,#second} к замку."
---"запирать"
-mp.msg.Lock.LOCK = "{#Me} {#word/запирать,#me,нст} {#first/вн}."
-
-mp.msg.Unlock.IMPOSSIBLE = "{#First/вн} невозможно отпереть."
---"заперт"
-mp.msg.Unlock.NOTLOCKED = "{#First} не {#word/заперт,#first}."
---"подходит"
-mp.msg.Unlock.WRONGKEY = "{#Second} не {#word/подходит,нст,#second} к замку."
---"отпирать"
-mp.msg.Unlock.UNLOCK = "{#Me} {#word/отпирать,#me,нст} {#first/вн}."
-
-mp.msg.Take.HAVE = "У {#me/вн} и так {#firstit} уже есть."
-mp.msg.Take.TAKE = "{#Me} {#verb/take} {#first/вн}."
-mp.msg.Take.SELF = "{#Me} есть у {#me/рд}."
---"находиться"
-mp.msg.Take.WHERE = "Нельзя взять то, {#if_hint/#where,supporter,на,в} чём {#me} {#word/находиться,#me}."
-
-mp.msg.Take.LIFE = "{#First/дт} это вряд ли понравится."
---"закреплён"
-mp.msg.Take.STATIC = "{#First} жестко {#word/закреплён,#first}."
-mp.msg.Take.SCENERY = "{#First/вн} невозможно взять."
-
---"надет"
-mp.msg.Take.WORN = "{#First} {#word/надет,#first} на {#firstwhere/вн}."
-mp.msg.Take.PARTOF = "{#First} {#if_hint/#first,plural,являются,является} частью {#firstwhere/рд}."
-
-mp.msg.Remove.WHERE = "{#First} не находится {#if_has/#second,supporter,на,в} {#second/пр,2}."
-mp.msg.Remove.REMOVE = "{#First} {#if_has/#second,supporter,поднят,извлечён из} {#second/рд}."
-
-mp.msg.Drop.SELF = "У {#me/рд} не хватит ловкости."
-mp.msg.Drop.WORN = "{#First/вн} сначала нужно снять."
---"помещать"
-mp.msg.Insert.INSERT = "{#Me} {#word/помещать,нст,#me} {#first/вн} в {#second/вн}."
-mp.msg.Insert.CLOSED = "{#Second} {#word/закрыт,#second}."
-mp.msg.Insert.NOTCONTAINER = "{#Second} не {#if_hint/#second,plural,могут,может} что-либо содержать."
-mp.msg.Insert.WHERE = "Нельзя поместить {#first/вн} внутрь себя."
-mp.msg.Insert.ALREADY = "Но {#first} уже и так {#word/находиться,#first} там."
-mp.msg.PutOn.NOTSUPPORTER = "Класть что-либо на {#second/вн} бессмысленно."
---"класть"
-mp.msg.PutOn.PUTON = "{#Me} {#word/класть,нст,#me} {#first/вн} на {#second/вн}."
-mp.msg.PutOn.WHERE = "Нельзя поместить {#first/вн} на себя."
-
---"брошен"
-mp.msg.Drop.DROP = "{#First} {#word/брошен,#first}."
-
-mp.msg.ThrowAt.NOTLIFE = "Бросать {#first/вн} в {#second/вн} бесполезно."
-mp.msg.ThrowAt.THROW = "У {#me/рд} не хватает решимости бросить {#first/вн} в {#second/вн}."
-
-
-mp.msg.Wear.NOTCLOTHES = "Надеть {#first/вн} невозможно."
-mp.msg.Wear.WORN = "{#First} уже на {#me/дт}."
---"надевать"
-mp.msg.Wear.WEAR = "{#Me} {#word/надевать,#me,нст} {#first/вн}."
-
-mp.msg.Disrobe.NOTWORN = "{#First} не на {#me/дт}."
---"снимать"
-mp.msg.Disrobe.DISROBE = "{#Me} {#word/снимать,#me,нст} {#first/вн}."
-
-mp.msg.SwitchOn.NONSWITCHABLE = "{#First/вн} невозможно включить."
---"включён"
-mp.msg.SwitchOn.ALREADY = "{#First} уже {#word/включён,#first}."
---"включать"
-mp.msg.SwitchOn.SWITCHON = "{#Me} {#word/включать,#me,нст} {#first/вн}."
-
-mp.msg.SwitchOff.NONSWITCHABLE = "{#First/вн} невозможно выключить."
---"выключён"
-mp.msg.SwitchOff.ALREADY = "{#First} уже {#word/выключён,#first}."
---"выключать"
-mp.msg.SwitchOff.SWITCHOFF = "{#Me} {#word/выключать,#me,нст} {#first/вн}."
-
---"годится"
-mp.msg.Eat.NOTEDIBLE = "{#First} не {#word/годится,#first} в пищу."
-mp.msg.Taste.TASTE = "Никакого необычного вкуса нет."
-
---"съедать"
-mp.msg.Eat.EAT = "{#Me} {#word/съедать,нст,#me} {#first/вн}."
-mp.msg.Drink.IMPOSSIBLE = "Выпить {#first/вн} невозможно."
-
-mp.msg.Push.STATIC = "{#First/вн} трудно сдвинуть с места."
-mp.msg.Push.SCENERY = "{#First/вн} двигать невозможно."
-mp.msg.Push.PUSH = "Ничего не произошло."
-
-mp.msg.Pull.STATIC = "{#First/вн} трудно сдвинуть с места."
-mp.msg.Pull.SCENERY = "{#First/вн} двигать невозможно."
-mp.msg.Pull.PULL = "Ничего не произошло."
-
-mp.msg.Turn.STATIC = "{#First/вн} трудно сдвинуть с места."
-mp.msg.Turn.SCENERY = "{#First/вн} двигать невозможно."
-mp.msg.Turn.TURN = "Ничего не произошло."
-
-mp.msg.Wait.WAIT = "Проходит немного времени."
-
-mp.msg.Touch.LIVE = "Не стоит давать волю рукам."
-mp.msg.Touch.TOUCH = "Никаких необычных ощущений нет."
-mp.msg.Touch.MYSELF = "{#Me} на месте."
-
-mp.msg.Rub.RUB = "Тереть {#first/вн} бессмысленно."
-mp.msg.Sing.SING = "С таким слухом и голосом как у {#me/рд} этого лучше не делать."
-
-mp.msg.Give.MYSELF = "{#First} и так у {#me/рд} есть."
-mp.msg.Give.GIVE = "{#Second/вн} это не заинтересовало."
-mp.msg.Show.SHOW = "{#Second/вн} это не впечатлило."
-
-mp.msg.Burn.BURN = "Поджигать {#first/вн} бессмысленно."
-mp.msg.Burn.BURN2 = "Поджигать {#first/вн} {#second/тв} бессмысленно."
---"поверь"
-mp.msg.Wake.WAKE = "Это не сон, а явь."
-mp.msg.WakeOther.WAKE = "Будить {#first/вн} не стоит."
-mp.msg.WakeOther.NOTLIVE = "Бессмысленно будить {#first/вн}."
-
-mp.msg.PushDir.PUSH = "Передвигать это нет смысла."
-
-mp.msg.Kiss.NOTLIVE = "Странное желание."
-mp.msg.Kiss.KISS = "{#Firstit/дт} это может не понравиться."
-mp.msg.Kiss.MYSELF = "Ну уж нет."
-
-mp.msg.Think.THINK = "Отличная идея!"
-mp.msg.Smell.SMELL = "Никакого необычного запаха нет."
-mp.msg.Smell.SMELL2 = "Пахнет как {#first}."
-
-mp.msg.Listen.LISTEN = "Никаких необычных звуков нет."
---"прислушаться"
-mp.msg.Listen.LISTEN2 = "{#Me} {#word/прислушаться,#me,прш} к {#first/дт}. Никаких необычных звуков нет."
-
---"выкопать"
-mp.msg.Dig.DIG = "{#Me} ничего не {#word/выкопать,#me,прш}."
-mp.msg.Dig.DIG2 = "Копать {#first/вн} бессмысленно."
-mp.msg.Dig.DIG3 = "Копать {#first/вн} {#second/тв} бессмысленно."
-
-mp.msg.Cut.CUT = "Резать {#first/вн} бессмысленно."
-mp.msg.Cut.CUT2 = "Резать {#first/вн} {#second/тв} бессмысленно."
-
-mp.msg.Tear.TEAR = "Рвать {#first/вн} бессмысленно."
-
-mp.msg.Tie.TIE = "Привязывать {#first/вн} бессмысленно."
-mp.msg.Tie.TIE2 = "Привязывать {#first/вн} к {#second/дт} бессмысленно."
-
-mp.msg.Blow.BLOW = "Дуть на/в {#first/вн} бессмысленно."
-
-mp.msg.Attack.LIFE = "Агрессия к {#first/дт} неоправданна."
-mp.msg.Attack.ATTACK = "Сила есть -- ума не надо?"
---"хотеть"
-mp.msg.Sleep.SLEEP = "{#Me} не {#word/хотеть,#me,нст} спать."
-mp.msg.Swim.SWIM = "Для этого здесь недостаточно воды."
-mp.msg.Fill.FILL = "Наполнять {#first/вн} бессмысленно."
---"подпрыгивать"
-mp.msg.Jump.JUMP = "{#Me} глупо {#word/подпрыгивать,#me,нст}."
-mp.msg.JumpOver.JUMPOVER = "Прыгать через {#first/вн} бессмысленно."
-
---"находить"
-mp.msg.Consult.CONSULT = "{#Me} не {#word/находить,#me,нст} ничего подходящего."
-
---"помахать"
-mp.msg.WaveHands.WAVE = "{#Me} глупо {#word/помахать,прш,#me} руками."
-mp.msg.Wave.WAVE = "{#Me} глупо {#word/помахать,прш,#me} {#first/тв}."
-
-mp.msg.Talk.SELF = "Беседы не получилось."
---"уметь"
-mp.msg.Talk.NOTLIVE = "{#First} не {#word/уметь,#first,нст} разговаривать."
---"отреагировать"
-mp.msg.Talk.LIVE = "{#First} никак не {#word/отреагировать,#first}."
-
-mp.msg.Tell.SELF = "Беседы не получилось."
-
---"безмолвен"
-mp.msg.Tell.NOTLIVE = "{#First} {#word/безмолвен,#first}."
---"отреагировать"
-mp.msg.Tell.LIVE = "{#First} никак не {#word/отреагировать,#first}."
---"нашёл"
-mp.msg.Tell.EMPTY = "{#Me} не {#word/нашёл,#me,прш} что сказать."
-
---"отвечать"
-mp.msg.Ask.NOTLIVE = "Ответа не последовало."
---"ответить"
-mp.msg.Ask.LIVE = "{#First} не {#word/ответить,прш,#first}."
---"придумать"
-mp.msg.Ask.EMPTY = "{#Me} не {#word/придумать,#me,прш} что спросить."
-mp.msg.Ask.SELF = "Хороший вопрос."
-
---"отвечать"
-mp.msg.Answer.NOTLIVE = "Ответа не последовало."
---"ответить"
-mp.msg.Answer.LIVE = "{#First} не {#word/ответить,прш,#first}."
---"придумать"
-mp.msg.Answer.EMPTY = "{#Me} не {#word/придумать,#me,прш} что ответить."
-mp.msg.Answer.SELF = "Хороший ответ."
-
-mp.msg.Yes.YES = "Вопрос был риторическим."
-
-mp.msg.Use.USE = "Как именно?"
-
---"продаваться"
-mp.msg.Buy.BUY = "{#First} не {#word/продаваться,нст,#first}."
-
-mp.keyboard_space = '<пробел>'
-mp.keyboard_backspace = '<удалить>'
-
-mp.msg.verbs.take = -"брать,#me,нст"
-
-mp.msg.GAMEOVER_HELP = [[Чтобы начать заново, введите рестарт.]];
-
-local function dict(t, hint)
-	local g = std.split(hint, ",")
-	for _, v in ipairs(g) do
-		if t[v] then
-			return t[v]
-		end
-	end
-end
-
-function mp:myself(_, hint)
-	local ww = dict({
-			["вн"] = "себя";
-			["дт"] = "себе";
-			["тв"] = "собой";
-			["пр"] = "себе";
-			["рд"] = "себя";
-		 }, hint)
-	return { ww }
-end
-
-function mp:it(w, hint)
-	hint = hint or ''
-	if w:hint'plural' then
-		return mp.mrd:noun(-"они/"..hint)
-	elseif w:hint'neuter' then
-		return mp.mrd:noun(-"оно/"..hint)
-	elseif w:hint'female' then
-		return mp.mrd:noun(-"она/"..hint)
-	end
-	return mp.mrd:noun(-"он/"..hint)
-end
-
-function mp:synonyms(w, hint)
-	local nt = {
-		['его'] = 'него';
-		['её'] = 'неё';
-		['ее'] = 'нее';
-		['ей'] = 'ней';
-		['им'] = 'ним';
-		['ими'] = 'ними';
-		['их'] = 'них';
-		['ему'] = 'нему';
-	}
-	local t = self:it(w, hint)
-	return { t, nt[t] }
-end
-
-mp.keyboard = {
-	'А','Б','В','Г','Д','Е','Ё','Ж','З','И','Й',
-	'К','Л','М','Н','О','П','Р','О','С','Т','У','Ф',
-	'Х','Ц','Ч','Ш','Щ','Ь','Ы','Ъ','Э','Ю','Я'
-}
-
-local function hints(w)
-	local h = std.split(w, ",")
-	local ret = {}
-	for _, v in ipairs(h) do
-		ret[v] = true
-	end
-	return ret
-end
-
-function mp:err_noun(noun)
-	if noun == '*' then return "{$fmt em|<любое слово>}" end
-	local hint = std.split(noun, "/")
-	local rc = "{$fmt em|"
-	if #hint == 2 then
-		local h = hints(hint[2])
-		local acc = 'кто/что'
-		if h["им"] then
-			acc = 'кто/что'
-		elseif h["рд"] then
-			acc = 'кого/чего'
-		elseif h["дт"] then
-			acc = 'кому/чему'
-		elseif h["вн"] then
-			acc = 'кого/что'
-		elseif h["тв"] then
-			acc = 'кем/чем'
-		elseif h["пр"] or h["пр2"] then
-			acc = 'ком/чём'
-		end
-		rc = rc ..  acc
-	else
-		rc = rc .. "кто/что"
-	end
-	rc = rc .. "}"
-	return rc
-end
-
-function mp.shortcut.vo(hint)
-	return "в ".. hint
---	local w = std.split(hint)
---	w = w[#w]
---	if mp.utf.len(w) > 2 and
---		(lang.is_vowel(utf.char(w, 1)) or
---		lang.is_vowel(utf.char(w, 2))) then
---		return "в ".. hint
---	end
---	return "во ".. hint
-end
-
-function mp.shortcut.so(hint)
-	return "с ".. hint
---	local w = std.split(hint)
---	w = w[#w]
---	if mp.utf.len(w) > 2 and
---		(lang.is_vowel(utf.char(w, 1)) or
---		lang.is_vowel(utf.char(w, 2))) then
---		return "с ".. hint
---	end
---	return "со ".. hint
-end
-
-function mp:before_Enter(w)
-	if mp:compass_dir(w) then
-		mp:xaction("Walk", w)
-		return
-	end
-	return false
-end
-
-mp.msg.HELP = [[{$fmt b|КАК ИГРАТЬ?}^^
-
-Вводите ваши действия в виде простых предложений вида: глагол -- существительное. Например:^
-> открыть дверь^
-> отпереть дверь ключом^
-> идти на север^
-> взять кепку^
-^
-Чтобы снова увидеть описание обстановки, введите "осмотреть", "осм" или просто нажмите "ввод".^
-^
-Чтобы осмотреть предмет, введите "осмотреть книгу" или просто "книга".^
-^
-Попробуйте "осмотреть себя" и узнать, кто вы.^
-^
-Чтобы узнать какие предметы у вас с собой, наберите "инвентарь" или "инв".^
-^
-Для перемещений используйте стороны света, например: "идти на север" или "север" или просто "с".^
-Кроме сторон света можно перемещаться вверх ("вверх" или "вв") и вниз ("вниз" или "вн").
-^^
-Вы можете воспользоваться клавишей "TAB" для автодополнения ввода.
-]]
-
-function mp.token.compass1(_)
-	return "{noun_obj}/@n_to,compass|{noun_obj}/@ne_to,compass|{noun_obj}/@e_to,compass|{noun_obj}/@se_to,compass|{noun_obj}/@s_to,compass|{noun_obj}/@sw_to,compass|{noun_obj}/@w_to,compass|{noun_obj}/@nw_to,compass"
-end
-
-function mp.token.compass2(_)
-	return "{noun_obj}/@u_to,compass|{noun_obj}/@d_to,compass|{noun_obj}/@in_to,compass|{noun_obj}/@out_to,compass"
-end
-
-function mp.shortcut.pref1()
-	return '[по|подо|за|во|про]'
-end
-
-function mp.shortcut.pref2()
-	return '[по|под|за|в|про]'
-end
-
-function mp.shortcut.pref3()
-	return 'по|подъ|за|въ|про'
-end
-
-std.mod_init(function(_)
-Verb { "#Walk",
-	"идти,{#pref1}йти,{#pref1}йди,иди,бежать,{#pref2}бежать,бег/и,{#pref2}бег/и,влез/ть,"..
-	"[|{#pref3}]ехать,едь,сесть,сядь,лечь,ляг,[в|]стать,[в|]стан/ь",
-	"на {compass1} : Walk",
-	"на|в|во {noun}/вн,scene,enterable : Enter",
-	"внутрь {noun}/рд,scene,enterable : Enter",
-	"к {noun}/дт,scene : Walk",
-	"{compass2}: Walk" }
-
-Verb { "#Exit",
-	"[вы|у]йти,выйд/и,уйд/и,вылез/ти,выхо/ди,обратно,назад,выбраться,выберись,выбираться",
-	"из|с|со {noun}/рд,scene : Exit",
-	"в|через|на {noun}/вн,scene,enterable : Enter",
-	"?наружу : Exit" }
-
-Verb { "#Exam",
-	"[о| |по|рас]смотр/еть,[раз|по]гляд/еть",
-	"?на {noun}/вн : Exam",
-	" : Look",
-	"инвентарь : Inv",
-	"~ под {noun}/тв : LookUnder",
-	"~ под {noun}/вн : LookUnder",
-	"~ в|во|на {noun}/пр,2 : Search",
-	"~ внутри {noun}/рд : Search",
-	"~ в|во {noun}/вн : Search",
-	"~ в|во {noun}/пр,2 о|об|обо|про * : Consult",
-	"~ о|об|обо|про * в|во {noun}/пр,2 : Consult reverse",
-}
-
-Verb { "#Search",
-	"[|по]искать,обыскать,[|по]ищ/и,обыщ/и,[|по]изуч/ать,[|по]исслед/овать",
-	"{noun}/вн : Search",
-	"в|во|на {noun}/пр,2 : Search",
-	"под {noun}/тв : LookUnder",
-	"~ в|во {noun}/пр,2 * : Consult",
-	"~ * в|во {noun}/пр,2 : Consult reverse",
-}
-
-Verb { "#Open",
-	"откр/ыть,распах/нуть,раскр/ыть,отвори/ть",
-	"{noun}/вн : Open",
-	"{noun}/вн {noun}/тв,held : Unlock",
-	"~ {noun}/тв,held {noun}/вн : Unlock reverse",
-}
-
-Verb { "#Unlock",
-	"отпереть,отопр/и",
-	"{noun}/вн {noun}/тв,held : Unlock",
-	"~ {noun}/тв,held {noun}/вн : Unlock reverse",
-}
-
-Verb { "#Close",
-	"закры/ть,закро/й",
-	"{noun}/вн : Close",
-	"{noun}/вн {noun}/тв,held : Lock",
-	"~ {noun}/вн на {noun}/вн,held : Lock",
-	"~ {noun}/тв,held {noun}/вн : Lock reverse",
-}
-
-Verb { "#Lock",
-	"запереть",
-	"{noun}/вн {noun}/тв,held : Lock",
-	"~ {noun}/вн на {noun}/вн,held : Lock",
-	"~ {noun}/тв,held {noun}/вн : Lock reverse",
-}
-
-Verb { "#Inv",
-	"инв/ентарь,с собой",
-	"Inv" }
-
-function mp.shortcut.pref4()
-	return '[ |за|подо]'
-end
-
-function mp.shortcut.pref5()
-	return '[ |за|под]'
-end
-
-Verb { "#Take",
-	"взять,возьм/и,{#pref4}брать,{#pref5}бер/и,доста/ть,схват/ить,"..
-	"украсть,украд/и,извле/чь,вын/уть,вытащ/ить",
-	"{noun}/вн,scene : Take",
-	"{noun}/вн,scene из|с|со|у {noun}/рд,inside,holder: Remove",
-	"~ из|с|со|у {noun}/рд,inside,holder {noun}/вн,scene: Remove reverse",
-}
-
-Verb { "#Insert",
-	"воткн/уть,втык/ать,вставить,влож/ить",
-	"[|про|за]сун/уть,вставь/",
-	"{noun}/вн,held в|во {noun}/вн,inside : Insert",
-	"~ {noun}/вн,held внутрь {noun}/рд : Insert",
-	"~ в|во {noun}/вн {noun}/вн : Insert reverse",
-	"~ внутрь {noun}/рд {noun}/вн : Insert reverse",
-}
-
-Verb { "#Drop",
-	"полож/ить,постав/ить,посади/ть,класть,клади/,помест/ить",
-	"{noun}/вн,held : Drop",
-	"{noun}/вн,held в|во {noun}/вн,inside : Insert",
-	"~ {noun}/вн,held внутрь {noun}/рд : Insert",
-	"{noun}/вн,held на {noun}/вн : PutOn",
-	"~ в|во {noun}/вн {noun}/вн : Insert reverse",
-	"~ внутрь {noun}/рд {noun}/вн : Insert reverse",
-	"~ на {noun}/вн {noun}/вн : PutOn reverse",
-}
-
-Verb {
-	"#ThrowAt",
-	"брос/ить,выбро/сить,кин/уть,кида/ть,швыр/нуть,метн/уть,метать",
-	"{noun}/вн,held : Drop",
-	"{noun}/вн,held в|во|на {noun}/вн : ThrowAt",
-	"~ в|во|на {noun}/вн {noun}/вн : ThrowAt reverse",
-	"~ {noun}/вн {noun}/дт : ThrowAt",
-	"~ {noun}/дт {noun}/вн : ThrowAt reverse",
-
-}
-
-Verb {
-	"#Wear",
-	"наде/ть,оде/ть",
-	"{noun}/вн,held : Wear",
-}
-
-Verb {
-	"#Disrobe",
-	"снять,сним/ать",
-	"{noun}/вн,worn : Disrobe",
-	"~ {noun}/вн с|со {noun}/рд : Remove",
-	"~ с|со {noun}/рд {noun}/вн : Remove reverse"
-}
-
-Verb {
-	"#SwitchOn",
-	"включ/ить,вруб/ить,активи/ровать",
-	"{noun}/вн : SwitchOn",
-}
-
-Verb {
-	"#SwitchOff",
-	"выключ/ить,выруб/ить,деактиви/ровать",
-	"{noun}/вн : SwitchOff",
-}
-
-Verb {
-	"#Eat",
-	"есть,съе/сть,куша/ть,скуша/ть,сожр/ать,жри,жрать,ешь",
-	"{noun}/вн,held : Eat",
-}
-
-Verb {
-	"#Taste",
-	"лизать,лизн/уть,попроб/овать,полиз/ать,сосать,пососа/ть",
-	"{noun}/вн : Taste"
-}
-
-Verb {
-	"#Drink",
-	"пить,выпить,выпей,выпью,пью",
-	"{noun}/вн,held : Drink",
-}
-
-function mp.shortcut.pref6()
-	return 'с|по|пере|за'
-end
-
-Verb {
-	"#Push",
-	"толк/ать,пих/ать,нажим/ать,нажм/и,нажать,[{#pref6}]двин/уть,[|{#pref6}]двига/ть,"..
-	"запих/нуть,затолк/ать,[|на]давить",
-	"?на {noun}/вн : Push",
-	"{noun}/вн на|в|во {noun}/вн : Transfer",
-	"~ {noun}/вн к {noun}/дт : Transfer",
-	"{noun}/вн {compass2} : Transfer",
-	"~ на|в|во {noun}/вн {noun}/вн : Transfer reverse",
-	"~ {compass2} {noun}/вн : Transfer reverse"
-}
-
-Verb {
-	"#Pull",
-	"[|вы|по]тян/уть,[|вы|по]тащ/ить,тягать,[|по]волоч/ь,[|по]волок/ти,дёрн/уть,дёрг/ать",
-	"?за {noun}/вн : Pull",
-	"{noun}/вн на|в|во {noun}/вн : Transfer",
-	"~ {noun}/вн к {noun}/дт : Transfer",
-	"{noun}/вн {compass2} : Transfer",
-	"~ на|в|во {noun}/вн {noun}/вн : Transfer reverse",
-	"~ {compass2} {noun}/вн : Transfer reverse"
-}
-
-Verb {
-	"#Turn",
-	"враща/ть,поверн/уть,[|за|по]верт/еть,[|за]крути/ть",
-	"{noun}/вн : Turn"
-}
-
-Verb {
-	"#Wait",
-	"ждать,жди,подожд/ать,ожид/ать",
-	"Wait"
-}
-
-function mp.shortcut.pref7()
-	return 'за|по|про|пере|вы'
-end
-
-Verb {
-	"#Rub",
-	"[|{#pref7}]тереть,[|{#pref7}]три/,[{#pref7}]тира/ть,",
-	"{noun}/вн : Rub"
-}
-
-Verb {
-	"#Sing",
-	"[|с]петь,спой/,пой",
-	"Sing"
-}
-
-Verb {
-	"#Touch",
-	"[ |по]трога/ть,трон/уть,дотрон/уться,[ |при]косну/ться,касать/ся,[ |по|о]щупа/ть,[ |по]глад/ить",
-	"{noun}/вн : Touch",
-	"~ до {noun}/рд : Touch",
-	"~ к {noun}/дт : Touch",
-	"~ {noun}/рд : Touch",
-}
-
-Verb {
-	"#Give",
-	"дать,отда/ть,предло/жить,предла/гать,дам,даю,дадим",
-	"{noun}/вн,held {noun}/дт,live : Give",
-	"~ {noun}/дт,live {noun}/вн,held : Give reverse",
-}
-
-Verb {
-	"#Show",
-	"показ/ать,покаж/и",
-	"{noun}/вн,held {noun}/дт,live : Show",
-	"~ {noun}/дт,live {noun}/вн,held : Show reverse",
-}
-
-Verb {
-	"#Burn",
-	"[|под]жечь,жг/и,подожги/,поджиг/ай,зажг/и,зажиг/ай,зажечь",
-	"{noun}/вн : Burn",
-	"{noun}/вн {noun}/тв,held : Burn",
-	"~ {noun}/тв,held {noun}/вн reverse",
-}
-
-Verb {
-	"#Wake",
-	"будить,разбуд/ить,просн/уться,бужу",
-	"{noun}/вн,live : WakeOther",
-	"Wake",
-}
-
-Verb {
-	"#Kiss",
-	"целовать,поцел/овать,чмок/нуть,обним/ать,обнять,целуй",
-	"{noun}/вн,live : Kiss"
-}
-
-Verb {
-	"#Think",
-	"дума/ть,мысл/ить,подум/ать,рассужд/ать",
-	"Think"
-}
-
-Verb {
-	"#Smell",
-	"нюха/ть,понюха/ть,занюх/ать,нюхн/уть,принюх/аться",
-	"Smell",
-	"{noun}/вн : Smell"
-}
-
-Verb {
-	"#Listen",
-	"слуша/ть,послуша/ть,прислушать/ся,слыш/ать,слух/",
-	"Listen",
-	"{noun}/вн : Listen",
-	"~ к {noun}/дт : Listen",
-}
-
-Verb {
-	"#Dig",
-	"копа/ть,выкопа/ть,выры/ть,рыть,рой,вырой",
-	"Dig",
-	"{noun}/вн,scene : Dig",
-	"{noun}/вн,scene {noun}/тв,held : Dig",
-	"~ {noun}/тв,held {noun}/вн,scene : Dig reverse",
-}
-
-function mp.shortcut.pref8()
-	return '[|раз|на|по|от|пере|вы]'
-end
-
-Verb {
-	"#Cut",
-	"{#pref8}рез/ать,{#pref8}реж/ь",
-	"{noun}/вн : Cut",
-	"{noun}/вн {noun}/тв,held: Cut",
-	"~ {noun}/тв,held {noun}/вн: Cut reverse"
-}
-
-function mp.shortcut.pref9()
-	return '[ |по|разо|со]'
-end
-
-Verb {
-	"#Tear",
-	"{#pref9}рвать,{#pref9}рви/,{#pref9}рву",
-	"{noun}/вн : Tear",
-}
-
-Verb {
-	"#Tie",
-	"[при|с]вяз/ать,[при|с]вяж/и",
-	"{noun}/вн : Tie",
-	"{noun}/вн к {noun}/дт : Tie",
-	"~ {noun}/вн с|со {noun}/тв : Tie",
-	"~ к {noun}/дт {noun}/вн : Tie reverse",
-	"~ с|со {noun}/тв {noun}/вн : Tie reverse",
-}
-
-Verb {
-	"#Blow",
-	"дуть,дуй/,дун/ь,задут/ь,задун/ь,задуй/",
-	"в|во|на {noun}/вн : Blow",
-	"~ {noun}/вн : Blow", -- задуть
-}
-
-Verb {
-	"#Attack",
-	"атак/овать,[|у|вы|раз|по|выши]бить,[|по|раз]бей/,удар/ить,"..
-	"[|с|раз|по|вы|вз]лома/ть,разруш/ить,побь/,круш/ить,напасть,напад/ать,пнуть",
-	"?на {noun}/вн : Attack"
-}
-
-Verb {
-	"#Sleep",
-	"спать,усн/уть,засн/уть,дрем/ать",
-	"Sleep",
-}
-
-Verb {
-	"#Swim",
-	"плыть,плав/ать,ныря/ть,уплы/ть,поплы/ть,нырн/уть,[ |ис]купа/ться",
-	"Swim",
-}
-
-Verb {
-	"#Consult",
-	"[|про|по]чита/ть,проч/есть",
-	"в|во {noun}/пр,2 о|об|обо|про * : Consult",
-	"~ о|об|обо|про * в|во {noun}/пр,2 : Consult reverse",
-	"~ {noun}/вн : Exam",
-}
-
-Verb {
-	"#Fill",
-	"наполн/ить,нали/ть",
-	"?в {noun}/вн : Fill",
-	"~ внутрь {noun}/рд : Fill"
-}
-
-Verb {
-	"#Jump",
-	"[|по]прыг/ать,скак/ать,[|пере|под]прыг/нуть,переско/чить",
-	"Jump",
-	"через {noun}/вн,scene : JumpOver",
-	"~ в {noun}/вн,scene : Enter",
-	"~ на {noun}/вн,scene : Climb",
-	"~ с|со {noun}/рд,scene : GetOff",
-	"~ {compass2} : Walk",
-	"~ +через {noun}/вн,scene : JumpOver",
-}
-
-Verb {
-	"#Wave",
-	"[|по]мах/ать,взмахн/уть,помаш/и",
-	"WaveHands",
-	"~ руками : WaveHands",
-	"{noun}/тв,held : Wave"
-}
-
-Verb {
-	"#Climb",
-	"[|за|по|про|в]лез/ть,карабк/аться,взбир/ться,взобраться,взбери/сь",
-	"на {noun}/вн,scene : Climb",
-	"по {noun}/дт,scene : Climb",
-	"~ внутрь {noun}/рд,scene : Enter",
-	"~ в|во {noun}/вн,scene : Enter",
-	"{compass2}: Walk",
-}
-
-Verb {
-	"#GetOff",
-	"слез/ть,спусти/ться,встать,встан/ь",
-	"GetOff",
-	"{compass2}: Walk",
-	"с|со {noun}/рд,scene : GetOff",
-}
-
-Verb {
-	"#Buy",
-	"купи/ть,покупать",
-	"{noun}/вн,scene : Buy"
-}
-
-Verb {
-	"#Talk",
-	"[|по]говор/ить,[|по]бесед/овать,разговарива/ть",
-	"с|со {noun}/тв,live : Talk"
-
-}
-
-Verb {
-	"#Tell",
-	"сказать,сообщи/ть,сообщу,рассказать,расскаж/ите",
-	"{noun}/дт,live о|об|обо|про * : Tell",
-	"~ * {noun}/дт,live : Tell reverse",
-	"~ {noun}/дт * : Tell"
-}
-
-Verb {
-	"#Ask",
-	"спросит/ь,расспросит/ь",
-	"{noun}/вн,live о|об|обо|про * : Ask",
-	"~ у {noun}/рд,live о|об|обо|про * : Ask",
-	"~ о|об|обо|про * у {noun}/рд,live : Ask reverse",
-}
-
-Verb {
-	"#AskFor",
-	"попроси/ть,выпроси/ть,уговори/ть,проси/ть,попрош/у,выпрош/у",
-	"у {noun}/рд,live * : AskFor",
-	"* у {noun}/рд,live : AskFor reverse",
-	"~ {noun}/вн,live * : AskTo",
-}
-
-Verb {
-	"#Answer",
-	"ответ/ить,отвеч/ать",
-	"{noun}/дт,live * : Answer",
-	"~ * {noun}/дт,live : Answer reverse",
-}
-
-Verb {
-	"#Yes",
-	"да",
-	"Yes",
-}
-
-Verb {
-	"#No",
-	"нет",
-	"No",
-}
-
-Verb {
-    "~ использ/овать,воспольз/оваться",
-    "{noun}/вн : Use",
-    "{noun}/тв : Use",
-}
-
-if DEBUG then
-	MetaVerb {
-		"#MetaWord",
-		"~_слово",
-		"* : MetaWord"
-	}
-	MetaVerb {
-		"#MetaNoun",
-		"~_сущ/ествительное",
-		"* : MetaNoun"
-	}
-	MetaVerb {
-		"#MetaTrace",
-		"~_трассировка",
-		"да : MetaTraceOn",
-		"нет : MetaTraceOff",
-	}
-	MetaVerb {
-		"#MetaDump",
-		"~_дамп",
-		"MetaDump"
-	}
-end
-MetaVerb {
-	"#MetaTranscript",
-	"~транскрипт",
-	"да : MetaTranscriptOn",
-	"нет : MetaTranscriptOff",
-	"MetaTranscript",
-}
-
-MetaVerb {
-	"#MetaExpert",
-	"~парсер",
-	"эксперт да : MetaExpertOn",
-	"эксперт нет : MetaExpertOff",
-}
-
-MetaVerb {
-	"#MetaSave",
-	"~сохрани/ть",
-	"MetaSave"
-}
-MetaVerb {
-	"#MetaLoad",
-	"~загрузи/ть",
-	"MetaLoad"
-}
-
-if DEBUG then
-MetaVerb {
-	"#MetaAutoplay",
-	"~автоскрипт",
-	"MetaAutoplay"
-}
-end
-
-mp.msg.MetaRestart.RESTART = "Начать заново?";
-
-MetaVerb {
-	"#MetaRestart",
-	"~заново,~рестарт",
-	"MetaRestart"
-}
-MetaVerb {
-	"#MetaHelp",
-	"~помощь,помоги/те",
-	"MetaHelp",
-}
-end, 1)
-
-std.mod_start(function()
-	if mp.undo > 0 then
-		mp.msg.MetaUndo.EMPTY = "Отменять нечего."
-		MetaVerb {
-			"#MetaUndo",
-			"~отмен/ить",
-			"MetaUndo",
-		}
-	end
-end)
--- Dialog
-std.phr.default_Event = "Exam"
-
-Verb ({"~ сказать", "{select} : Exam" }, std.dlg)
-Verb ({'#Next', "дальше", "Next" }, mp.cutscene)
-Verb ({'#Exam', "~ осмотреть", "Look" }, std.dlg)
-
-mp.cutscene.default_Verb = "дальше"
-mp.cutscene.help = fmt.em "<дальше>";
-
-std.dlg.default_Verb = "осмотреть"
-std.player.word = -"ты/мр,2л"
 --luacheck: globals mp
 --luacheck: no self
 
 local tostring = std.tostr
+local table = std.table
 
 --- Error handler
 -- @param err error code
@@ -12520,7 +12680,7 @@ function mp:err(err)
 				if verb.verb_nr == 1 then
 					hint = true
 					p (mp:mesg 'UNKNOWN_VERB', " ", iface:em(self.words[verb.verb_nr]), ".")
-					p (mp:mesg 'UNKNOWN_VERB_HINT', " ", iface:em(fixed.word .. (fixed.morph or "")), "?")
+					mp:message('UNKNOWN_VERB_HINT', fixed.word .. (fixed.morph or ""))
 					break
 				end
 			end
@@ -12541,10 +12701,10 @@ function mp:err(err)
 					verb = verb .. vv .. ' '
 				end
 				verb = verb:gsub(" $", "")
+				for _, vv in ipairs(self.hints.match) do
+					verb = verb .. ' '.. vv
+				end
 				for _, vv in pairs(self.hints.match.args) do
-					if vv.word then
-						verb = verb .. ' '.. vv.word
-					end
 					if vv.ob then
 						second_noun = true
 					end
@@ -12601,7 +12761,7 @@ function mp:err(err)
 				mp:message 'INCOMPLETE'
 			end
 		end
-		if not mp.errhints then
+		if not mp.errhints or need_noun then
 			return
 		end
 		local words = {}
@@ -12609,14 +12769,21 @@ function mp:err(err)
 		for _, v in ipairs(self.hints) do
 			if v:find("^~?{noun}") or v == '*' then
 				v = mp:err_noun(v)
-				if not dups[v] and not need_noun then
+				if not dups[v] then
 					table.insert(words, v)
 					dups[v] = true
 				end
 			else
 				local pat = self:pattern(v)
+				local empty = true
 				for _, vv in ipairs(pat) do
-					if not vv.hidden and not dups[vv.word] then
+					if not vv.hidden then
+						empty = false
+						break
+					end
+				end
+				for _, vv in ipairs(pat) do
+					if (empty or not vv.hidden) and not dups[vv.word] then
 						table.insert(words, vv.word)
 						dups[vv.word] = true
 					end
@@ -12633,14 +12800,14 @@ function mp:err(err)
 				end
 				p (mp:mesg 'HINT_WORDS', ", ", parsed or '')
 			else
-				p (mp:mesg 'HINT_WORDS', " ")
+				p (mp:mesg 'HINT_WORDS', ", ")
 			end
 		end
 
 		for k, v in ipairs(words) do
 			if k ~= 1 then
 				if k == #words then
-					pr (" ", mp.msg.HINT_OR, " ")
+					pr (" ", mp.msg.OR, " ")
 				else
 					pr (", ")
 				end
@@ -12654,7 +12821,7 @@ function mp:err(err)
 		pr (mp:mesg 'MULTIPLE', " ", self.multi[1])
 		for k = 2, #self.multi do
 			if k == #self.multi then
-				pr (" ", mp.msg.HINT_AND, " ", self.multi[k])
+				pr (" ", mp.msg.AND, " ", self.multi[k])
 			else
 				pr (", ", self.multi[k])
 			end
@@ -14218,6 +14385,10 @@ function mp:Remove(w, wh)
 		mp:message 'Remove.WHERE'
 		return
 	end
+	if wh == std.me() then
+		mp:xaction('Disrobe', w, wh)
+		return
+	end
 	mp:xaction('Take', w, wh)
 end
 
@@ -15277,6 +15448,11 @@ function mp:MetaHelp()
 	pn(mp:mesg 'HELP')
 end
 
+function mp:MetaScore()
+	mp:message'TITLE_TURNS'
+	mp:message'TITLE_SCORE'
+end
+
 function mp:MetaTranscript()
 	if self.logfile then
 		p("Log file: ", self.logfile)
@@ -15305,6 +15481,21 @@ function mp:MetaTranscriptOn()
 		f:close()
 		self.lognum = self.lognum + 1
 	end
+end
+function mp:MetaVersion()
+	p(mp.version)
+end
+function mp:MetaVerbs()
+	local verbs = {}
+	for _, v in ipairs(mp:verbs()) do
+		local vv = v.verb[1]
+		if vv and not vv.hidden then
+			local verb = vv.word .. (vv.morph or "")
+			table.insert(verbs, verb)
+		end
+	end
+	table.sort(verbs)
+	for _, v in ipairs(verbs) do p(v) end
 end
 
 mp.msg.MetaRestart = {}
@@ -15585,13 +15776,14 @@ instead.get_title = function(_)
 	local col = instead.theme_var('win.col.fg')
 	local score = ''
 	if mp.score then
-		score = fmt.tab('70%', 'center')..fmt.nb(mp:mesg('TITLE_SCORE') .. tostring(mp.score))
+		score = fmt.tab('70%', 'center')..fmt.nb(mp:mesg('TITLE_SCORE'))
 	end
-	local moves = fmt.tab('100%', 'right')..fmt.nb(mp:mesg('TITLE_TURNS') .. tostring(game:time() - 1))
+	local moves = fmt.tab('100%', 'right')..fmt.nb(mp:mesg('TITLE_TURNS'))
 	return iface:left((title.. score .. moves).."\n".. iface:img(string.format("box:%dx1,%s", w, col)))
 end
 
 --luacheck: globals content
-function content(...)
-	return mp:content(...)
+function content(w, ...)
+	w = std.object(w)
+	return mp:content(w, ...)
 end
