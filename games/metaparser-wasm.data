@@ -7355,13 +7355,25 @@ end
 
 mp.msg.enter = "<ввод>"
 mp.msg.EMPTY = 'Простите?'
-mp.msg.UNKNOWN_VERB = "Непонятный глагол"
+mp.msg.UNKNOWN_VERB = function(w)
+	p ("Непонятный глагол ", iface:em(w), ".")
+end
 mp.msg.UNKNOWN_VERB_HINT = function(w)
 	p ("Самое похожее слово: ", iface:em(w), ".")
 end
 mp.msg.INCOMPLETE = "Нужно дополнить предложение."
-mp.msg.INCOMPLETE_NOUN = "К чему вы хотите применить команду"
-mp.msg.INCOMPLETE_SECOND_NOUN = "Уточните команду:"
+mp.msg.INCOMPLETE_NOUN = function(w)
+	if w then
+		p('К чему вы хотите применить команду "',w, '"?')
+	else
+		p"К чему вы хотите применить команду?"
+	end
+end
+
+mp.msg.INCOMPLETE_SECOND_NOUN = function(w)
+	p ('Уточните команду: "',w,'"?')
+end
+
 mp.msg.UNKNOWN_OBJ = function(w)
 	if not w then
 		p "Об этом предмете ничего не известно."
@@ -7392,15 +7404,26 @@ mp.msg.NOTINV = function(t)
 	p (lang.cap(t:noun'вн') .. " сначала нужно взять.")
 end
 --"надет"
-mp.msg.WORN = function(w)
+mp.msg.HAS_WORN = function(w)
 	local hint = w:gram().hint
-	pr (" (",mp.mrd:word('надет/' .. hint), ")")
+	return mp.mrd:word('надет/' .. hint)
 end
 --"открыт"
-mp.msg.OPEN = function(w)
+mp.msg.HAS_OPEN = function(w)
 	local hint = w:gram().hint
-	pr (" (",mp.mrd:word('открыт/' .. hint), ")")
+	return mp.mrd:word('открыт/' .. hint)
 end
+--"включён"
+mp.msg.HAS_ON = function(w)
+	local hint = w:gram().hint
+	return mp.mrd:word('включён/' .. hint)
+end
+--"светится"
+mp.msg.HAS_LIGHT = function(w)
+	local hint = w:gram().hint
+	return mp.mrd:word('светится/' .. hint)
+end
+
 mp.msg.EXITBEFORE = "Возможно, {#me/дт} нужно сначала "..
 	"{#if_has/#where,supporter,слезть с {#where/рд}.,покинуть {#where/вн}.}"
 
@@ -7413,7 +7436,6 @@ mp.msg.ACCESS2 = "{#Second} отсюда не{#word/доступен,#second}."
 
 mp.msg.Look.HEREIS = "Здесь находится"
 mp.msg.Look.HEREARE = "Здесь находятся"
-
 mp.msg.NOROOM = function(w)
 	if w == std.me() then
 		p ("У {#me/рд} слишком много вещей.")
@@ -7426,11 +7448,47 @@ end
 --"включён"
 --"выключен"
 mp.msg.Exam.SWITCHSTATE = "{#First} сейчас {#if_has/#first,on,{#word/включён,#first},{#word/выключен,#first}}."
-mp.msg.Exam.NOTHING = "ничего нет."
-mp.msg.Exam.IS = "находится"
-mp.msg.Exam.ARE = "находятся"
-mp.msg.Exam.IN = "В {#first/пр,2}"
-mp.msg.Exam.ON = "На {#first/пр,2}"
+
+mp.msg.Exam.NOTHING = function(w)
+	if w:has 'supporter' then
+		mp:pnoun (w, "На {#first/пр,2}")
+	else
+		mp:pnoun (w, "В {#first/пр,2}")
+	end
+	p "ничего нет."
+end
+
+mp.msg.Exam.CONTENT = function(w, oo)
+	local single = #oo == 1 and not oo[1]:hint 'plural'
+	if std.me():where() == w or std.here() == w then
+if false then
+		if single then
+			p "Здесь находится"
+		else
+			p "Здесь находятся"
+		end
+		mp:multidsc(oo)
+else
+		p "{#Me} {#word/видеть,#me,нст} здесь";
+		mp:multidsc(oo, 'вн')
+end
+		p "."
+		return
+	end
+	if w:has 'supporter' then
+		mp:pnoun (w, "На {#first/пр,2}")
+	else
+		mp:pnoun (w, "В {#first/пр,2}")
+	end
+	if single then
+		p "находится"
+	else
+		p "находятся"
+	end
+	mp:multidsc(oo)
+	p "."
+end
+
 --"видеть"
 mp.msg.Exam.DEFAULT = "{#Me} не {#word/видеть,#me,нст} {#vo/{#first/пр}} ничего необычного.";
 mp.msg.Exam.SELF = "{#Me} не {#word/видеть,#me,нст} в себе ничего необычного.";
@@ -8572,7 +8630,12 @@ function mp:skip_filter(w)
 	end
 	return true
 end
-
+function mp:ignore_filter(w)
+	if w == 'the' or w == 'a' or w == 'an' then
+		return true
+	end
+	return false
+end
 _'@compass'.before_Default = function() p('"{#First}" is the direction. You can not ', mp.parsed[1], ' {#firstit}.') end
 
 function mp.msg.SCORE(d)
@@ -8581,16 +8644,6 @@ function mp.msg.SCORE(d)
 	else
 		pn ("{$fmt em|(Score is decreased by ", d, ")}")
 	end
-end
-
-function mp.msg.MULTIDSC(oo, inv)
-	if #oo > 0 then
-		local s = oo[1]
-		if not s:hint'proper' and not s:hint'surname' then
-			p "the"
-		end
-	end
-	mp:multidsc(oo, inv)
 end
 
 mp.door.word = "door"
@@ -8619,14 +8672,14 @@ mp.msg.TAKING_ALL = function(w)
 	pn (iface:em("(taking "..w:the_noun()..")"))
 end
 mp.msg.TAKE_BEFORE = function(w)
-	pn (iface:em("(taking "..w:the_noun().." before)"))
+	pn (iface:em("(taking "..w:the_noun().." first)"))
 end
 mp.msg.DISROBE_BEFORE = function(w)
-	pn (iface:em("(disrobing "..w:the_noun().." before)"))
+	pn (iface:em("(disrobing "..w:the_noun().." first)"))
 end
 
 mp.msg.CLOSE_BEFORE = function(w)
-	pn (iface:em("(closing "..w:the_noun() .. " before)"))
+	pn (iface:em("(closing "..w:the_noun() .. " first)"))
 end
 
 local function str_split(str, delim)
@@ -8832,13 +8885,23 @@ end
 
 mp.msg.enter = "<Enter>"
 mp.msg.EMPTY = 'Excuse me?'
-mp.msg.UNKNOWN_VERB = "Unknown verb"
+mp.msg.UNKNOWN_VERB = function(w)
+	p ("Unknown verb ", iface:em(w), ".")
+end
 mp.msg.UNKNOWN_VERB_HINT = function(w)
 	p ("The most similar word is ", iface:em(w), ".")
 end
 mp.msg.INCOMPLETE = "The sentence must be supplemented."
-mp.msg.INCOMPLETE_NOUN = "What do you want to apply the command to"
-mp.msg.INCOMPLETE_SECOND_NOUN = "Clarify the command:"
+mp.msg.INCOMPLETE_NOUN = function(w)
+	if w then
+		p ('What do you want to apply the command "'..w..'" to?')
+	else
+		p "What do you want to apply the command to?"
+	end
+end
+mp.msg.INCOMPLETE_SECOND_NOUN = function(w)
+	p ('Clarify the command: "', w, '"?')
+end
 mp.msg.UNKNOWN_OBJ = "Here is no such thing"
 mp.msg.UNKNOWN_OBJ = function(w)
 	if not w then
@@ -8868,11 +8931,17 @@ mp.msg.NO_LIVE_ACTION = "{#Me} can only do that to something animate."
 mp.msg.NOTINV = function(t)
 	p (lang.cap(t:the_noun()) .. " must be taken first.")
 end
-mp.msg.WORN = function(_)
-	pr (" (worn)")
+mp.msg.HAS_WORN = function(_)
+	return "worn"
 end
-mp.msg.OPEN = function(_)
-	pr (" (opened)")
+mp.msg.HAS_OPEN = function(_)
+	return "opened"
+end
+mp.msg.HAS_ON = function(_)
+	return "switched on"
+end
+mp.msg.HAS_LIGHT = function(_)
+	return "providing light"
 end
 
 mp.msg.EXITBEFORE = "May be, {#me} should to {#if_has/#where,supporter,get off,get out of} {#thenoun/#where}."
@@ -8897,12 +8966,34 @@ mp.msg.NOROOM = function(w)
 end
 
 mp.msg.Exam.SWITCHSTATE = "{#Thefirst} {#is/#first} switched {#if_has/#first,on,on,off}."
-mp.msg.Exam.NOTHING = "nothing."
-mp.msg.Exam.IS = "there is"
-mp.msg.Exam.ARE = "there are"
-mp.msg.Exam.IN = "In {#thefirst}"
-mp.msg.Exam.ON = "On {#thefirst}"
-
+mp.msg.Exam.NOTHING = function(w)
+	p "There is nothing "
+	if w:has 'supporter' then
+		mp:pnoun (w, "on {#thefirst}.")
+	else
+		mp:pnoun (w, "in {#thefirst}.")
+	end
+end
+mp.msg.Exam.CONTENT = function(w, oo)
+	local single = not oo[1]:hint 'plural'
+	if std.me():where() == w or std.here() == w then
+		p "{#Me} can see"
+		mp:multidsc(oo)
+		p " here."
+		return
+	end
+	if single then
+		p "There is"
+	else
+		p "There are"
+	end
+	mp:multidsc(oo)
+	if w:has 'supporter' then
+		mp:pnoun (w, " on {#thefirst}.")
+	else
+		mp:pnoun (w, " in {#thefirst}.")
+	end
+end
 mp.msg.Exam.DEFAULT = "{#Me} {#does/#me} not see anything unusual in {#thefirst}.";
 mp.msg.Exam.SELF = "{#Me} {#does/#me} not see anything unusual in {#yourself/#me}.";
 
@@ -9114,7 +9205,8 @@ mp.msg.Answer.EMPTY = "{#Me} can't find anything to answer."
 mp.msg.Answer.SELF = "Good answer."
 
 mp.msg.Yes.YES = "That was a rhetorical question."
-mp.msg.Buy.USE = "How exactly?"
+mp.msg.Buy.BUY = "Nothing is on sale."
+mp.msg.Use.USE = "How exactly?"
 
 mp.keyboard_space = '<space>'
 mp.keyboard_backspace = '<backspace>'
@@ -9224,12 +9316,18 @@ end
 
 std.mod_init(function(_)
 Verb { "#Walk",
-	"go,walk,run,enter",
+	"go,walk,run,enter,come",
 	"{compass1} : Walk",
 	"in|into|inside|on {noun}/scene,enterable : Enter",
 	"{noun}/scene : Walk",
 	"{compass2}: Walk",
-	"outside|out|away: Exit" }
+	"outside|out|away: Exit"
+}
+
+Verb { "#Enter",
+	"enter",
+	"{noun}/scene,enterable : Enter"
+}
 
 Verb { "#Sit",
 	"sit,stand",
@@ -9240,7 +9338,7 @@ Verb { "#Lie",
 	"down in|into|inside|on {noun}/scene,enterable : Enter" }
 
 Verb { "#Exit",
-	"exit,out",
+	"exit,out,leave",
 	"?from {noun}/scene : Exit",
 	": Exit"}
 
@@ -9590,8 +9688,7 @@ Verb {
 Verb {
 	"#Talk",
 	"talk",
-	"with {noun}/live : Talk"
-
+	"with|to {noun}/live : Talk"
 }
 
 Verb {
@@ -10014,7 +10111,7 @@ mp = std.obj {
 	detailed_inv = false;
 	daemons = std.list {};
 	{
-		version = "2.0";
+		version = "2.1";
 		cache = { tokens = {}, nouns = false };
 		scope = std.list {};
 		logfile = false;
@@ -10720,7 +10817,9 @@ end
 function mp:skip_filter()
 	return true
 end
-
+function mp:ignore_filter(w)
+	return false
+end
 function mp:lookup_verb(words, lev)
 	local ret = {}
 	local w = self:verbs()
@@ -11284,7 +11383,7 @@ function mp:match(verb, w, compl)
 				end
 				local new_wildcard
 				local k, len = word_search(a, pp.word)
-				if not k and mp.compare_len > 0 then
+				if not k and mp.compare_len > 0 and not pp.synonym then
 					k, len = word_search(a, pp.word, starteq)
 					new_wildcard = true
 				else
@@ -11783,6 +11882,14 @@ function mp:correct(inp)
 		if rinp ~= '' then rinp = rinp .. ' ' end
 		rinp = rinp .. v
 	end
+	local strip_inp = str_split(inp, inp_split)
+	inp = ''
+	for _, v in ipairs(strip_inp) do
+		if not mp:ignore_filter(v) then
+			if inp ~= '' then inp = inp .. ' ' end
+			inp = inp .. v
+		end
+	end
 	local cmprinp = rinp:gsub("["..inp_split.."]+", " ")
 	if not self:eq(cmprinp, inp) then
 		pn(fmt.em("("..rinp..")"))
@@ -12088,6 +12195,19 @@ function mp:shorten_input(w)
 	end
 end
 
+function mp:strip_input(w)
+	local i = 1
+	local len = #w
+	while i < len do
+		if mp:ignore_filter(w[i]) then
+			table.remove(w, i)
+			len = len - 1
+		else
+			i = i + 1
+		end
+	end
+end
+
 function mp:input(str)
 --	self.cache = { tokens = {} };
 	local hints = {}
@@ -12105,6 +12225,7 @@ function mp:input(str)
 		if not str then return false end
 	end
 	local w = str_split(str, inp_split)
+	mp:strip_input(w)
 	mp:shorten_input(w)
 	self.words = w
 	if #w == 0 then
@@ -12301,7 +12422,7 @@ function mp:autoscript(w)
 	end
 	self.autoplay = io.open(w or 'autoscript') or false
 	if self.autoplay then
-		self:MetaTranscriptOn();
+		-- self:MetaTranscriptOn();
 		std.cmd = { 'autoscript' }
 		return true
 	end
@@ -12656,7 +12777,8 @@ end
 
 local tostring = std.tostr
 local table = std.table
-
+local type = type
+local string = string
 --- Error handler
 -- @param err error code
 function mp:err(err)
@@ -12679,15 +12801,14 @@ function mp:err(err)
 				local fixed = verb.verb[verb.word_nr]
 				if verb.verb_nr == 1 then
 					hint = true
-					p (mp:mesg 'UNKNOWN_VERB', " ", iface:em(self.words[verb.verb_nr]), ".")
+					mp:message('UNKNOWN_VERB', self.words[verb.verb_nr])
 					mp:message('UNKNOWN_VERB_HINT', fixed.word .. (fixed.morph or ""))
 					break
 				end
 			end
 		end
 		if not hint then
-			p (mp:mesg('UNKNOWN_VERB') or "Unknown verb:",
-			   " ", iface:em(self.words[1]), ".")
+			mp:message('UNKNOWN_VERB', self.words[1])
 		end
 	elseif err == "EMPTY_INPUT" then
 		p (mp:mesg('EMPTY') or "Empty input.")
@@ -12750,12 +12871,9 @@ function mp:err(err)
 		else
 			if need_noun then
 				if second_noun then
-					p (mp:mesg('INCOMPLETE_SECOND_NOUN') or mp:mesg('INCOMPLETE_NOUN'),
-						" \"", second_noun, " ", mp:err_noun(need_noun), "\"?")
-				elseif parsed then
-					p (mp:mesg('INCOMPLETE_NOUN'), " \"", parsed, "\"?")
+					mp:message('INCOMPLETE_SECOND_NOUN', second_noun .." " ..mp:err_noun(need_noun))
 				else
-					p (mp:mesg('INCOMPLETE_NOUN'), "?")
+					mp:message('INCOMPLETE_NOUN', parsed)
 				end
 			else
 				mp:message 'INCOMPLETE'
@@ -12895,11 +13013,11 @@ mp.door = std.class({
 	end;
 }, std.obj):attr 'enterable,openable,door'
 
-local function pnoun(noun, m, ...)
+function mp:pnoun(noun, msg)
 	local ctx = mp:save_ctx()
 	mp.first = noun
 	mp.first_hint = noun:gram().hint
-	mp:message(m, ...)
+	p(msg)
 	mp:restore_ctx(ctx)
 end
 
@@ -13421,20 +13539,64 @@ mp.compass_dir = function(_, w, dir)
 	return w ^ ('@'..dir)
 end
 
-mp.msg.MULTIDSC = function(oo, inv)
-	return mp:multidsc(oo, inv)
+mp.msg.INFODSC = function(o)
+	return mp:infodsc(o)
+end
+
+mp.detailed_attr = {
+	{ 'worn' },
+	{ 'open', 'openable'},
+--	{ 'on', 'switchable'},
+--	{ 'light' }
+}
+
+function mp:infodsc(ob)
+	local info = {}
+	for _, v in ipairs(self.detailed_attr) do
+		local hit = #v > 0
+		for _, vv in ipairs(v) do
+			if ob:hasnt(vv) then
+				hit = false
+				break
+			end
+		end
+		if hit then
+			local n = 'HAS_'..string.upper(v[1])
+			if mp.msg[n] then
+				table.insert(info, mp:mesg(n, ob))
+			end
+		end
+	end
+
+	if #info > 0 then
+		pr(" (")
+		for k, i in ipairs(info) do
+			if #info > 1 and k == #info then
+				pr(' ', mp.msg.AND, ' ')
+			elseif k > 1 then
+				pr(", ")
+			end
+			pr(i)
+		end
+		pr(")")
+	end
 end
 
 function mp:multidsc(oo, inv)
 	local t = {}
 	local dup = {}
+	local hint = type(inv) == 'string' and inv or ''
 	for _, v in ipairs(oo) do
 		local n
 		if not v:has'concealed' then
-			if inv then
+			if inv == true then
 				n = std.call(v, 'inv')
 			end
-			n = n or v:noun(1)
+			if type(v.a_noun) == 'function' then
+				n = n or v:a_noun(hint, 1)
+			else
+				n = n or v:noun(hint, 1)
+			end
 			if dup[n] then
 				dup[n] = dup[n] + 1
 			else
@@ -13454,17 +13616,12 @@ function mp:multidsc(oo, inv)
 			end
 		end
 		if dup[v] > 1 then
-			pr (vv.ob:noun(self.mrd.lang.gram_t.plural, 1), " (", dup[v], " ", mp.msg.ENUM, ")")
+			pr (ob:noun(hint .. ','..self.mrd.lang.gram_t.plural, 1), " (", dup[v], " ", mp:mesg('ENUM', dup[v], ob), ")")
 		else
 			pr (v)
-			if ob:has'worn' then
-				pr(mp:mesg('WORN', ob))
-			elseif ob:has'openable' and ob:has'open' then
-				pr(mp:mesg('OPEN', ob))
-			end
+			pr(mp:mesg('INFODSC', ob))
 		end
 	end
-	p "."
 end
 
 -- Default priority in content
@@ -13567,38 +13724,10 @@ function mp:content(w, exam)
 	oo = ooo
 	if #oo == 0 then
 		if not inside and exam and mp.first == w and not something then
-			if w:has 'supporter' then
-				pnoun (w, 'Exam.ON')
-			else
-				pnoun (w, 'Exam.IN')
-			end
-			mp:message 'Exam.NOTHING'
+			mp:message ('Exam.NOTHING', w)
 		end
-	elseif #oo == 1 and not oo[1]:hint 'plural' then
-		if std.me():where() == w or std.here() == w then
-			mp:message('Look.HEREIS', w)
-		else
-			if w:has 'supporter' then
-				pnoun (w, 'Exam.ON')
-			else
-				pnoun (w, 'Exam.IN')
-			end
-			mp:message 'Exam.IS'
-		end
-		-- p(oo[1]:noun(1), ".")
-		mp:message('MULTIDSC', oo)
 	else
-		if std.me():where() == w or std.here() == w then
-			mp:message('Look.HEREARE', w)
-		else
-			if w:has 'supporter' then
-				pnoun (w, 'Exam.ON')
-			else
-				pnoun (w, 'Exam.IN')
-			end
-			mp:message 'Exam.ARE'
-		end
-		mp:message('MULTIDSC', oo)
+		mp:message('Exam.CONTENT', w, oo)
 	end
 -- expand?
 	for _, o in ipairs(expand) do
@@ -13949,11 +14078,7 @@ function mp:detailed_Inv(wh, indent)
 			for _ = 1, indent do pr(iface:nb' ') end
 			local inv = std.call(o, 'inv') or o:noun(1)
 			pr(inv)
-			if o:has'worn' then
-				mp:message('WORN', o)
-			elseif o:has'openable' and o:has'open' then
-				mp:message('OPEN', o)
-			end
+			mp:message('INFODSC', o)
 			pn()
 			if o:has'supporter' or o:has'container' then
 				mp:detailed_Inv(o, indent + 1)
@@ -13983,7 +14108,8 @@ function mp:after_Inv()
 		mp:detailed_Inv(std.me(), 1)
 	else
 		p()
-		mp:message('MULTIDSC', oo, true)
+		mp:multidsc(oo, true)
+		p "."
 	end
 end
 
@@ -14054,7 +14180,7 @@ function mp:mesg(m, ...)
 	for _, n in ipairs(t) do
 		m = m[n]
 		if not m then
-			std.err("Wrong message id", 2)
+			std.err("Wrong message id: "..tostring(n), 2)
 		end
 	end
 	if type(m) ~= 'function' then
