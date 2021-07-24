@@ -7282,6 +7282,37 @@ function mp:skip_filter(w)
 	return true
 end
 
+local function endswith(w, t)
+	return not not w:find(t..'$')
+end
+
+function mp:verb_filter(w)
+	if #w > 1 then
+		return true
+	end
+	local utf = mp.utf
+	local verb = w[1]
+	local t = utf.chars(w[1])
+	if endswith(verb, 'ся') or endswith(verb, 'сь') or endswith(verb, 'те') then
+		local len = #verb
+		len = len - utf.bb(verb, len)
+		len = len - utf.bb(verb, len)
+		verb = verb:sub(1, len)
+	end
+	if endswith(verb, 'и') or endswith(verb, 'ь') then
+		return true
+	end
+	local t = utf.chars(verb)
+	local a = { ['а'] = true, ['е'] = true, ['и'] = true,
+		['о'] = true, ['у'] = true, ['ы'] = true,
+		['ю'] = true, ['я'] = true };
+	local len = #t
+	if len >= 2 and a[t[len - 1]] and t[len] == 'й' then -- or a[t[len]] then
+		return true
+	end
+	return false
+end
+
 _'@compass'.before_Default = function()
 	p('"{#First}" это направление. {#Firstit/вн} нельзя ', mp.parsed[1], ".")
 end
@@ -8039,7 +8070,7 @@ Verb { "#Take",
 }
 
 Verb { "#Insert",
-	"воткн/уть,втык/ать,вставить,влож/ить",
+	"воткн/уть,втык/ать,вставить,влож/ить,"..
 	"[|про|за]сун/уть,вставь/",
 	"{noun}/вн,held в|во {noun}/вн,inside : Insert",
 	"~ {noun}/вн,held внутрь {noun}/рд : Insert",
@@ -8060,7 +8091,7 @@ Verb { "#Drop",
 
 Verb {
 	"#ThrowAt",
-	"брос/ить,выбро/сить,кин/уть,кида/ть,швыр/нуть,метн/уть,метать",
+	"брос/ить,выбро/сить,кину/ть,кинь/,кида/ть,швыр/нуть,метн/уть,метать",
 	"{noun}/вн,held : Drop",
 	"{noun}/вн,held в|во|на {noun}/вн : ThrowAt",
 	"~ в|во|на {noun}/вн {noun}/вн : ThrowAt reverse",
@@ -8613,7 +8644,8 @@ mp.shorten = {
 	["se"] = "southeast";
 	["sw"] = "southwest";
 	["nw"] = "northwest";
-
+	["u"] = "up";
+	["d"] = "down";
 }
 
 mp.shorten_expert = {
@@ -9215,21 +9247,21 @@ mp.msg.GAMEOVER_HELP = [[Use restart to restart game.]];
 
 function mp:myself(ob)
 	if ob:hint'first' then
-		return { "myself", "me" }
+		return { "myself", "self", "me" }
 	end
 	if ob:hint'second' then
-		return { "yourself", "me", "myself" }
+		return { "yourself", "myself", "self", "me" }
 	end
 	if ob:hint'plural' then
-		return { "themselves", "our" }
+		return { "themselves", "ourselves", "self" }
 	end
 	if ob:hint'female' then
-		return { "herself", "me" }
+		return { "herself", "myself", "self", "me" }
 	end
 	if ob:hint'male' then
-		return { "himself", "me" }
+		return { "himself", "myself", "self", "me" }
 	end
-	return { "itself" }
+	return { "itself", "myself", "self", "me" }
 end
 
 function mp:it(w)
@@ -9349,6 +9381,7 @@ Verb { "#Exam",
 	"inventory : Inv",
 	"~ under {noun} : LookUnder",
 	"~ in|inside|into|through|on {noun} : Search",
+	"~ ?at {noun} : Exam",
 	"~ up * in {noun} : Consult reverse",
 }
 
@@ -9451,6 +9484,7 @@ Verb {
 
 Verb {
 	"#SwitchOff",
+	"switch",
 	"off {noun}: SwitchOff",
 	"~ {noun} off : SwitchOff",
 }
@@ -9577,7 +9611,7 @@ Verb {
 
 Verb {
 	"#Listen",
-	"listen.hear",
+	"listen,hear",
 	"Listen",
 	"?to {noun}: Listen",
 }
@@ -10128,6 +10162,7 @@ mp = std.obj {
 			ff = std.rawget(_G, 'utf8_next') or utf_ff;
 			len = std.rawget(_G, 'utf8_len') or utf_len;
 			char = std.rawget(_G, 'utf8_char') or utf_char;
+			chars = utf_chars;
 		};
 		lev_thresh = 3;
 		lev_ratio = 0.20;
@@ -10485,24 +10520,29 @@ function mp.token.noun(w)
 	for _, o in ipairs(oo) do
 		local d = {}
 		local r = o:noun(attr, d)
-		for k, v in ipairs(d) do
-			local hidden = (k ~= 1) or w.hidden
-			if o:has 'multi' then
-				hidden = w.hidden or (v.idx ~= 1)
-			end
-			if o == std.me() and mp.myself then
-				for _, vm in ipairs(mp:myself(o, w.morph)) do
-					table.insert(ww, { optional = w.optional, word = vm, morph = attr, ob = o, alias = o.alias, hidden = hidden })
-				end
-				break
-			else
-				table.insert(ww, { optional = w.optional, word = r[k], ob = o, morph = attr, alias = v.alias, hidden = hidden })
+		if o == std.me() and mp.myself then
+			for _, vm in ipairs(mp:myself(o, w.morph)) do
+				table.insert(ww, { optional = w.optional, word = vm, morph = attr, ob = o, alias = o.alias,
+					hidden = w.hidden or _ ~= 1 })
 			end
 		end
-		if o == mp.first_it then
-			table.insert(syms, 1, o)
-		elseif o == mp.second_it then
-			table.insert(syms, o)
+		if o ~= std.me() or (not o:hint'first' and not o:hint'second') then
+			for k, v in ipairs(d) do
+				local hidden = (k ~= 1) or w.hidden
+				if o:has 'multi' then
+					hidden = w.hidden or (v.idx ~= 1)
+				end
+				table.insert(ww,
+					{ optional = w.optional,
+						word = r[k], ob = o,
+						morph = attr, alias = v.alias,
+						hidden = hidden })
+			end
+			if o == mp.first_it then
+				table.insert(syms, 1, o)
+			elseif o == mp.second_it then
+				table.insert(syms, o)
+			end
 		end
 	end
 
@@ -10817,9 +10857,15 @@ end
 function mp:skip_filter()
 	return true
 end
+
 function mp:ignore_filter(w)
 	return false
 end
+
+function mp:verb_filter(words)
+	return true
+end
+
 function mp:lookup_verb(words, lev)
 	local ret = {}
 	local w = self:verbs()
@@ -10829,8 +10875,18 @@ function mp:lookup_verb(words, lev)
 			local verb = vv.word .. (vv.morph or "")
 			local i, len, rlev
 			i, len, rlev = word_search(words, verb, lev and self.lev_thresh)
-			if not i and not lev and verb ~= vv.word then
+			if not i and not lev and vv.morph then
 				i, len = self:lookup_short(words, vv.word)
+				if i then
+					local v = {}
+					for k = i, i + len - 1 do
+						table.insert(v, words[k])
+					end
+					if verb:find(table.concat(v, ' '), 1, true) ~= 1 and
+						not self:verb_filter(v) then
+						i = false
+					end
+				end
 			end
 			if i and i > 1 and not self:skip_filter({words[i - 1]}) then
 				i = nil
@@ -11075,11 +11131,12 @@ function mp:compl_filter(v)
 			hidden = not v.ob.hint_noun
 		end
 	end
-	if hidden and self.compl_thresh == 0 then
+	local _, pre = self:compl_ctx()
+	local nsym = mp.utf.len(pre)
+	if hidden and self.compl_thresh == 0 and nsym == 0 then
 		return false
 	end
-	local _, pre = self:compl_ctx()
-	if mp.utf.len(pre) < self.compl_thresh then
+	if nsym < self.compl_thresh then
 		return false
 	end
 	if not v.ob or not v.morph then
@@ -11185,6 +11242,7 @@ function mp:compl_ctx_poss()
 			table.insert(res, v)
 		end
 	end
+	res.eol = ctx.eol
 	return res
 end
 
@@ -11199,6 +11257,7 @@ function mp:compl(str)
 	collectgarbage("stop")
 	self:compl_ctx_current();
 	poss = self:compl_ctx_poss()
+	eol = poss.eol
 	if (#poss == 0 and e) or #words == 0 then -- no context
 		if #words == 0 or (#words == 1 and not e) then -- verb?
 			poss, eol = self:compl_verb(words)
@@ -11214,13 +11273,16 @@ function mp:compl(str)
 			end
 		else -- matches
 			self.cache.nouns = self:nouns()
-			poss, eol, vargs = self:compl_match(words)
+			poss, eol = self:compl_match(words)
 		end
+		poss.eol = eol
 		self:compl_ctx_push(poss)
 	end
 	local _, pre = self:compl_ctx()
 	for _, v in ipairs(poss) do
-		if v.word == '*' then vargs = true end
+		if v.word == '*' and not v.hidden then
+			vargs = true
+		end
 		if self:startswith(v.word, pre) and not v.word:find("%*$") then
 			if not dups[v.word] then
 				dups[v.word] = v
@@ -11359,7 +11421,7 @@ function mp:match(verb, w, compl)
 		local vargs
 		for lev, v in ipairs(d.pat) do -- pattern arguments
 			if v == '*' or v == '~*' then
-				vargs = true -- found
+				vargs = v -- found
 				v = '*'
 			end
 			local noun = not not v:find("^~?{noun}")
@@ -11497,7 +11559,7 @@ function mp:match(verb, w, compl)
 						end
 						table.insert(hints, { word = v, lev = rlev, match = match })
 					else
-						table.insert(hints, { word = '*', lev = rlev, match = match })
+						table.insert(hints, { word = vargs, lev = rlev, match = match })
 					end
 				end
 				if not found then
@@ -12885,7 +12947,8 @@ function mp:err(err)
 		local words = {}
 		local dups = {}
 		for _, v in ipairs(self.hints) do
-			if v:find("^~?{noun}") or v == '*' then
+			if v:find("^~?{noun}") or v == '*' or v == '~*' then
+				if v:sub(1,1) == '~' then v = v:sub(2) end
 				v = mp:err_noun(v)
 				if not dups[v] then
 					table.insert(words, v)
@@ -13239,8 +13302,8 @@ std.player.look = function(s)
 	if s:need_scene() then
 		scene = r:scene()
 	end
-	return (std.par(std.scene_delim, scene or false, r:display() or false))
-end;
+	return (std.par(std.scene_delim, scene or false, r:display() or false, std.call(mp, 'footer') or false))
+end
 
 --
 local function check_persist(w)
