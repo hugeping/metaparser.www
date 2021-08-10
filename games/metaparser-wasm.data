@@ -10521,7 +10521,7 @@ function mp.token.noun(w)
 		local d = {}
 		local r = o:noun(attr, d)
 		if o == std.me() and mp.myself then
-			for _, vm in ipairs(mp:myself(o, w.morph)) do
+			for _, vm in ipairs(mp:myself(o, w.morph) or {}) do
 				table.insert(ww, { optional = w.optional, word = vm, morph = attr, ob = o, alias = o.alias,
 					hidden = w.hidden or _ ~= 1 })
 			end
@@ -12455,12 +12455,13 @@ function(cmd)
 			std.game:__start()
 		end
 		if mp:noparser() then
-			return true, false
+			return
 		end
 --		mp.inp = mp:docompl(mp.inp)
 		local r, v, n
 		repeat
 			if n then
+				std.busy(true)
 				std.abort_cmd = false
 				std.me():moved(false)
 				std.me():need_scene(false)
@@ -12468,6 +12469,7 @@ function(cmd)
 			r, v = mp:key_enter(cmd[1] == 'look')
 			n = true
 		until not mp:autoplay_pending() or mp:noparser()
+		std.busy(false)
 		mp:onedit()
 		return r, v
 	end
@@ -12520,10 +12522,10 @@ instead.mouse_filter(0)
 -- speedup undo
 local obusy = std.busy
 local busy_count = 0
-function std.busy()
+function std.busy(b)
 	busy_count = busy_count + 1
-	if (busy_count % 100) == 0 then
-		obusy()
+	if not b or (busy_count % 100) == 0 then
+		obusy(b)
 	end
 end
 function instead.fading()
@@ -13842,14 +13844,11 @@ function mp:step()
 	std.pr(r)
 	std.abort_cmd = true
 end
-
+local last_gfx = false
 function mp:post_action()
 	if self:noparser() or
 		(self.event and self.event:find("Meta", 1, true)) or
 		self:comment() then
-		if not std.abort_cmd then
-			game:time(game:time() - 1)
-		end
 		return
 	end
 	if mp.undo > 0 then
@@ -13875,11 +13874,14 @@ function mp:post_action()
 		if not gfx and std.game.gfx ~= nil then
 			gfx = std.call(std.game, 'gfx')
 		end
-		if gfx then
-			pn(fmt.c(fmt.img(gfx)))
+		if gfx ~= last_gfx then
+			if gfx then
+				pn(fmt.c(fmt.img(gfx)))
+			end
+			p(l, std.scene_delim)
+			game.player:need_scene(false)
+			last_gfx = gfx
 		end
-		p(l, std.scene_delim)
-		game.player:need_scene(false)
 	end
 	mp:step()
 end
