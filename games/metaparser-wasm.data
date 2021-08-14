@@ -10145,7 +10145,7 @@ mp = std.obj {
 	detailed_inv = false;
 	daemons = std.list {};
 	{
-		version = "2.1";
+		version = "2.2";
 		cache = { tokens = {}, nouns = false };
 		scope = std.list {};
 		logfile = false;
@@ -11972,7 +11972,7 @@ function mp:show_prompt(inp)
 	if std.cmd[1] == 'look' then
 		return false
 	end
-	if std.here():has 'cutscene' or std.here():has 'noprompt' or player_moved() or std.abort_cmd then
+	if std.here():has 'noprompt' then
 		return false
 	end
 	if self.prompt then
@@ -13804,6 +13804,14 @@ end
 
 std.room:attr 'enterable,light'
 
+function mp:strip(r)
+	if std.strip_call and type(r) == 'string' then
+		r = r:gsub("^[%^\n\r\t ]+", "") -- extra heading ^ and spaces
+		r = r:gsub("[%^\n\r\t ]+$", "") -- extra trailing ^ and spaces
+	end
+	return r
+end
+
 function mp:step()
 	local old_daemons = {}
 	game.__daemons:for_each(function(o)
@@ -13826,19 +13834,11 @@ function mp:step()
 		end
 	end
 	local s = std.game -- after reset game is recreated
-	local r = std.pget()
-	if std.strip_call and type(r) == 'string' then
-		r = r:gsub("^[%^\n\r\t ]+", "") -- extra heading ^ and spaces
-		r = r:gsub("[%^\n\r\t ]+$", "") -- extra trailing ^ and spaces
-	end
+	local r = mp:strip(std.pget())
 	s:reaction(r or false)
 	std.pclr()
 	s:step()
-	r = s:display(true)
-	if std.strip_call and type(r) == 'string' then
-		r = r:gsub("^[%^\n\r\t ]+", "") -- extra heading ^ and spaces
-		r = r:gsub("[%^\n\r\t ]+$", "") -- extra trailing ^ and spaces
-	end
+	r = mp:strip(s:display(true))
 	s:lastreact(s:reaction() or false)
 	s:lastdisp(r)
 	std.pr(r)
@@ -13846,9 +13846,19 @@ function mp:step()
 end
 local last_gfx = false
 function mp:post_action()
-	if self:noparser() or
-		(self.event and self.event:find("Meta", 1, true)) or
-		self:comment() then
+	if (self.event and self.event:find("Meta", 1, true)) or self:comment() or self:noparser() then
+		if std.abort_cmd then
+			return
+		end
+		local s = std.game
+		local r = mp:strip(std.pget())
+		s:reaction(r or false)
+		std.pclr()
+		r = mp:strip(s:display(self:noparser()))
+		s:lastdisp(r)
+		s:lastreact(s:reaction() or false)
+		std.pr(r)
+		std.abort_cmd = true
 		return
 	end
 	if mp.undo > 0 then
