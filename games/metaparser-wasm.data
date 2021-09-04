@@ -7916,13 +7916,26 @@ function mp.shortcut.vo(hint)
 end
 
 function mp.shortcut.so(hint)
+	local so = {
+		["с"] = true,
+		["з"] = true,
+		["ш"] = true,
+		["ж"] = true,
+		["л"] = true,
+		["р"] = true,
+		["м"] = true,
+	}
+
 	local w = std.split(mp.mrd.lang.norm(hint))
 	local utf = mp.utf
 	w = w[#w]
 	if utf.len(w) > 2 and
-		(not lang.is_vowel(utf.char(w, 1) and
-		not lang.is_vowel(utf.char(w, 2))))
-		or utf.char(w, 1) == 'щ' then
+		((so[utf.char(w, 1)] and
+		not lang.is_vowel(utf.char(w, 2))) or utf.char(w, 1) == 'щ') then
+		return "со ".. hint
+	end
+	if utf.len(w) > 2 and utf.char(w, 1) == 'л' and utf.char(w, 2) == 'ь' and
+		not lang.is_vowel(utf.char(w, 2)) then
 		return "со ".. hint
 	end
 	return "с ".. hint
@@ -7956,6 +7969,9 @@ mp.msg.HELP = function()
 Для перемещений используйте стороны света, например: "идти на север" или "север" или просто "с". Кроме сторон света можно перемещаться вверх ("вверх" или "вв") и вниз ("вниз" или "вн"), "внутрь" и "наружу".]]
 	if not instead.tiny then
 		p [[^^Вы можете воспользоваться клавишей "TAB" для автодополнения ввода.]]
+	else
+		p [[^^Вы можете сокращать названия объектов.]]
+		p [[^^Чтобы сохранять и загружать игру используйте "сохранить" и "загрузить".]]
 	end
 end
 
@@ -9332,7 +9348,10 @@ To exam your inventory, enter "inv".^
 Use compass directions to walk. For example: "go north" or "north" or just "n". There are also up and down directions, outside and inside.]]
 	if not instead.tiny then
 		p [[^^You may use the "TAB" key for autocompletion.]]
+	else
+		p [[^^Use "save" and "load" to save and load game.]]
 	end
+
 end
 
 function mp.token.compass1(_)
