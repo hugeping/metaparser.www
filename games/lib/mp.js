@@ -1,5 +1,6 @@
 var $window = $(window), $doc = $(document), $body, bodylineheight;
 var Game;
+var input;
 
 $(function()
 {
@@ -90,7 +91,11 @@ function dataUrl(path)
 
 function parseImg(tag, img)
 {
-    return '<img '+ 'src="' + dataUrl(img) + '">';
+    var url = dataUrl(img);
+    if (url != "")
+        return '<img '+ 'src="' + url + '" onload="input.scroll();">';
+    else
+        return "";
 }
 
 function parseOutput(str)
@@ -269,7 +274,7 @@ function Start(fname)
     Game = fname;
     $("#about").detach();
 
-    var input = new Input($("#transcript"));
+    input = new Input($("#transcript"));
     var span = $('<div role="listitem">');
 
     if (parser_start(fname) != 0) {
