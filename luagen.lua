@@ -109,9 +109,10 @@ function gen_game(v)
 end
 
 local games = {
-	"moon9", "mars", "snowstorm", "summerday", "deadhand", "awake", "london", "trial", "urzi", "archive"
+	"moon9", "mars", "snowstorm", "summerday", "deadhand", "awake", "london", "trial", "urzi", "archive", "october",
 }
 local g = {}
+table.sort(games)
 for _, v in ipairs(games) do
 	local path = "games/"..v
 	local t = dofile(path.."/info.lua")
