@@ -7275,7 +7275,7 @@ mp.shorten_expert = {
 
 function mp:skip_filter(w)
 	for _, v in ipairs(w) do
-		if v == 'не' or v == 'кроме' or v == 'вместо' then
+		if v == 'не' or v == 'кроме' or v == 'вместо' or v == 'к' then
 			return false
 		end
 	end
@@ -7410,9 +7410,9 @@ end
 
 mp.msg.UNKNOWN_OBJ = function(w)
 	if not w then
-		p "Об этом предмете ничего не известно."
+		p "Об этом предмете здесь ничего не известно."
 	else
-		p "Об этом предмете ничего не известно "
+		p "Об этом предмете здесь ничего не известно "
 		p ("(",w,").")
 	end
 end
@@ -8963,12 +8963,11 @@ end
 mp.msg.INCOMPLETE_SECOND_NOUN = function(w)
 	p ('Clarify the command: "', w, '"?')
 end
-mp.msg.UNKNOWN_OBJ = "Here is no such thing"
 mp.msg.UNKNOWN_OBJ = function(w)
 	if not w then
-		p "No information about this object."
+		p "Nothing is known about this thing here."
 	else
-		p "No information about this object "
+		p "Nothing is known about this thing here "
 		p ("(", w, ").")
 	end
 end
@@ -10186,7 +10185,7 @@ mp = std.obj {
 	inp_delim = " :.,!?-";
 	daemons = std.list {};
 	{
-		version = "2.3";
+		version = "2.4";
 		cache = { tokens = {}, nouns = false };
 		scope = std.list {};
 		logfile = false;
@@ -13186,6 +13185,9 @@ std.class({
 
 mp.gameover =
 std.class({
+	enter = function()
+		getDaemons():zap()
+	end;
 	before_Default = function()
 		mp:message 'GAMEOVER_HELP';
 	end;
@@ -13195,7 +13197,7 @@ std.class({
 	OnError = function()
 		mp:message 'GAMEOVER_HELP';
 	end;
-}, std.room)
+}, std.room):attr'gameover'
 
 -- player
 mp.msg.Look = {}
@@ -14513,7 +14515,9 @@ function mp:move(w, wh, force)
 		end
 	end
 	w:attr 'moved'
-
+	if wh:type'player' then
+		w:attr '~concealed'
+	end
 	if not force then
 		for _, o in ipairs(ww) do
 			if mp:runmethods('after', 'LetGo', o, w, wh) then
@@ -15980,17 +15984,26 @@ function Class(t, w)
 	return std.class(t, w)
 end
 
-std.obj.once = function(s, n)
+local function get_once_tag(n)
 	if type(n) == 'string' then
-		n = '__once_'..n
+		return '__once_'..n
 	else
-		n = '__once'
+		return '__once'
 	end
+end
+
+std.obj.once = function(s, n)
+	n = get_once_tag(n)
 	if not s[n] then
 		s[n] = true
 		return true
 	end
 	return false
+end
+
+std.obj.is_once = function(s, n)
+	n = get_once_tag(n)
+	return not not s[n]
 end
 
 std.obj.daemonStart = function(s)
@@ -16015,6 +16028,10 @@ end
 
 function isDaemon(w)
 	return std.object(w):isDaemon()
+end
+
+function getDaemons()
+	return game.__daemons
 end
 
 instead.notitle = true
