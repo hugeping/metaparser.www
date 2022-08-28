@@ -39,8 +39,8 @@ local feedback=[[
 	</div>
 ]]
 local donate=[[
-<b><a href="https://paypal.me/hugeping">Paypal</a></b><br/>
-<b><a href="https://yoomoney.ru/to/41001612955830">Я-Деньги</a></b><br/><br/>
+<!-- <b><a href="https://paypal.me/hugeping">Paypal</a></b><br/> -->
+<b><a href="https://yoomoney.ru/to/41001612955830">ЮMoney</a></b><br/><br/>
 Со мной можно связаться по почте <a href="mailto:gl00my@mail.ru">gl00my[at]mail.ru</a><br/>
 ]]
 local counter=[[]]
