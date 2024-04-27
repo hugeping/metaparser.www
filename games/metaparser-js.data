@@ -1929,6 +1929,20 @@ local missed_words = {}
 
 local word_cache = { list = {}, hash = {} }
 
+function mrd:dicts(what, ob)
+	local ww, gg
+	if ob then
+		ww, gg = self:dict(ob.__dict, what)
+	end
+	if not ww then
+		ww, gg = self:dict(game.__dict, what)
+	end
+	if not ww then
+		ww, gg = self:dict(self.__dict, what)
+	end
+	return ww, gg
+end
+
 function mrd:word(w, ob)
 	local cache = word_cache
 	if ob then
@@ -1959,19 +1973,17 @@ function mrd:word(w, ob)
 	local found = true
 	local noun = false
 	local lang = self.lang
+
+	local ww, gg = self:dicts(w .. '/' .. hints, ob)
+	if ww then
+		table.insert(grams, gg)
+		cache_add(cache, key, { w, grams })
+		return ww, grams
+	end
 	w = w:gsub(word_match,
 		function(t)
 			if noun then return t end
-			local ww, gg
-			if ob then
-				ww, gg = self:dict(ob.__dict, t..'/'..hints)
-			end
-			if not ww then
-				ww, gg = self:dict(game.__dict, t..'/'..hints)
-			end
-			if not ww then
-				ww, gg = self:dict(self.__dict, t..'/'..hints)
-			end
+			ww, gg = self:dicts(t .. '/' .. hints, ob)
 			noun = gg and gg[lang.gram_t.noun]
 			if not ww then
 				ww, gg = self:lookup(t, g)
@@ -3367,8 +3379,16 @@ mp.shorten = {
 
 mp.shorten_expert = {
 	["x"] = "examine";
+	["x *"] = "examine";
 	["i"] = "inventory";
 	["z"] = "wait";
+}
+
+mp.shorten_custom = {
+	["to *"] = "walk";
+	["in *"] = "walk";
+	["into *"] = "walk";
+	["on *"] = "walk";
 }
 
 function mp:skip_filter(w)
@@ -4668,10 +4688,21 @@ mp.shorten_expert = {
 	["и"] = "инвентарь";
 	["ж"] = "ждать";
 	["о"] = "осмотреть";
+	["о *"] = "осмотреть";
 	["осм"] = "осмотреть";
-	["вкл"] = "включить";
-	["выкл"] = "выключить";
+	["осм *"] = "осмотреть";
+	["вкл *"] = "включить";
+	["выкл *"] = "выключить";
 	["см"] = "смотреть";
+	["см *"] = "смотреть";
+}
+
+mp.shorten_custom = {
+	["в *"] = "идти в",
+	["на *"] = "идти на",
+	["во *"] = "идти во",
+	["к *"] = "идти к",
+	["ко *"] = "идти ко",
 }
 
 function mp:skip_filter(w)
@@ -6351,6 +6382,7 @@ mp = std.obj {
 		};
 		shorten = {};
 		shorten_expert = {};
+		shorten_custom = {};
 		_pager_mode = false;
 	};
 	text = '';
@@ -8406,12 +8438,16 @@ function mp:shorten_input(w)
 		return
 	end
 	local str
+	local key = #w > 1 and (w[1] .. ' *') or w[1]
 	if #w == 1 and self.shorten[w[1]] then
 		str = self.shorten[w[1]]
 	end
 	if self.expert_mode and not str and
-		self.shorten_expert[w[1]] then
-		str = self.shorten_expert[w[1]]
+		self.shorten_expert[key] then
+		str = self.shorten_expert[key]
+	end
+	if not str and self.shorten_custom[key] then
+		str = self.shorten_custom[key]
 	end
 	if not str then
 		return
@@ -8436,6 +8472,13 @@ function mp:strip_input(w)
 	end
 end
 
+function mp:pre_input(str)
+	return str
+end
+
+function mp:custom_input(_)
+end
+
 function mp:input(str)
 --	self.cache = { tokens = {} };
 	local hints = {}
@@ -8448,14 +8491,20 @@ function mp:input(str)
 	if (self.default_Verb or std.here().default_Verb) and str == "" then
 		str = std.here().default_Verb or self.default_Verb
 	end
-	if type(mp.pre_input) == 'function' then
-		str = mp:pre_input(str)
-		if not str then return false end
-	end
+
+	str = mp:pre_input(str)
+	if not str then return false end
+
 	local w = str_split(str, mp.inp_delim)
 	mp:strip_input(w)
 	mp:shorten_input(w)
 	self.words = w
+
+	local r, v = mp:custom_input(w)
+	if r ~= nil or v ~= nil then
+		return r, v
+	end
+
 	if #w == 0 then
 		return false, "EMPTY_INPUT"
 	end
@@ -15791,16 +15840,6 @@ local type = std.type
 
 local dict = {}
 
-local function get_bool(o, nam)
-	if type(o[nam]) == 'boolean' then
-		return o[nam]
-	end
-	if type(o[nam]) == 'function' then
-		return o:nam()
-	end
-	return nil
-end
-
 instead.inv_delim = '\n'
 instead.hinv_delim = ' | '
 instead.ways_delim = ' | '
@@ -16104,14 +16143,22 @@ end
 std.mod_init(function()
 	std.rawset(_G, 'instead', instead)
 end)
+
+local mp_hooked = false
+
 std.mod_start(function()
 	dict = {}
 	local mp = std.ref '@metaparser'
 	if mp then
 		mp.winsize = 0
 		mp.prompt = false
+		if not mp_hooked then -- force truncate text for all commands
+			std.mod_cmd(function(cmd) mp:trim() end)
+			mp_hooked = true
+		end
 	end
 end)
+
 std.mod_step(function(state)
 	if state then
 		dict = {}
