@@ -3,14 +3,34 @@
 <head>
 	<meta charset="utf-8">
 	<title>МЕТАПАРСЕР</title>
-	<script src="lib/jquery.min.js"></script>
+	<script src="lib/jquery.slim.min.js"></script>
 	<script src="lib/mp.js"></script>
 	<link rel="icon" type="image/png" sizes="64x64" href="lib/favicon.png">
 	<link rel="stylesheet" href="lib/mp.css">
 <!--	<meta name="gamefile" content="snowstorm.zip"> -->
 	<meta name="viewport" content="width=device-width,user-scalable=no">
+<style>
+.TextGrid {
+	width: 100%;
+	text-align: right;
+	position: fixed;
+	margin: 0 -1em;
+	z-index: 2;
+}
+
+.TextGrid a {
+	text-decoration: none;
+	background-color: black;
+	color: white;
+	border-radius: .2em;
+	padding: .2em;
+}
+</style>
 </head>
 <body>
+<div class="status TextGrid" id="iframe-back" hidden><a href="../index-iframe.html"><b>назад </b></a></div>
+<script>if (window.self !== window.top || /(^|&)iframe=1(&|$)/.test(location.search)) document.getElementById('iframe-back').hidden = false;</script>
+
 	<div id="about">
 		<h1>МЕТАПАРСЕР</h1>
 		<p>&gt; пожалуйста, подождите...</p>
@@ -36,6 +56,6 @@
 	var script = document.createElement('script');
 	script.type = 'text/javascript';
 	script.src = supported ? "metaparser-wasm.js" : "metaparser-js.js"
-	$("body").append(script);
+	document.body.appendChild(script);
 	</script>
 </html>
